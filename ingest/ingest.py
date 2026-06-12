@@ -157,6 +157,8 @@ def main():
     hop_travel = defaultdict(list)
     # per pattern: first-stop departures per (day, band) for headways
     pat_departures = defaultdict(list)  # (pid, day) -> [dep_sec at first stop]
+    # per pattern: every stop's departure times for schedule mode
+    pat_stop_deps = {}  # (pid, day) -> [ [dep_min, ...] per stop index ]
     pat_trip_count = defaultdict(int)
     pat_shapes = defaultdict(lambda: defaultdict(int))  # pid -> shape_id -> count
 
@@ -182,6 +184,13 @@ def main():
             pat_shapes[pid][shape_id] += 1
         for day in days:
             pat_departures[(pid, day)].append(stops[0][3])
+            sd = pat_stop_deps.get((pid, day))
+            if sd is None:
+                sd = pat_stop_deps[(pid, day)] = [[] for _ in stops]
+            # floor to minutes: a train can only leave later than the stored
+            # minute, so schedule mode errs toward "you just missed it"
+            for i, s in enumerate(stops):
+                sd[i].append(s[3] // 60)
             for i in range(len(stops) - 1):
                 dep = stops[i][3]
                 arr_next = stops[i + 1][2]
@@ -223,6 +232,16 @@ def main():
             if any(b["runs"] for b in bands):
                 service[day] = bands
         pat["service"] = service
+        # schedule mode: per-stop sorted departure minutes-past-midnight
+        # (>1440 for GTFS 24:xx+ overnight times, which belong to this
+        # service day); deduped because overlapping service_ids repeat trips
+        departures = {}
+        for day in SERVICE_DAYS:
+            sd = pat_stop_deps.get((pid, day))
+            if sd:
+                departures[day] = [sorted(set(mins)) for mins in sd]
+        if departures:
+            pat["departures"] = departures
         pat["tripCount"] = pat_trip_count[pid]
         first, last = pat["stations"][0], pat["stations"][-1]
         arrow = "↑" if pat["direction"] == "N" else "↓"

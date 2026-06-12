@@ -3,10 +3,13 @@ import type {
   Station, TransferEdge, WaitPolicy,
 } from './types';
 import { BAND_NAMES } from './types';
-import { bandOf, haversineMeters, serviceDayAt, fmtClock } from './time';
+import { bandOf, haversineMeters, serviceDayAt, fmtClock, DAY } from './time';
 
 const WALK_SPEED_MPS = 1.4; // city walking pace; pace multiplier scales this
 const WALK_PATH_FACTOR = 1.3; // streets are not straight lines
+
+/** schedule mode: headway above which the wait snaps to real departures */
+export const DEFAULT_SCHEDULE_CUTOFF_SEC = 720;
 
 export interface NetworkIndex {
   net: Network;
@@ -129,11 +132,70 @@ export function headwayAt(p: Pattern, day: ServiceDay, band: BandIndex):
   return { runs: b.runs, headwaySec: b.headwaySec };
 }
 
+/** first departure >= target in a sorted minutes array, as seconds; null if
+ *  the array is exhausted */
+function searchDeps(deps: number[], targetSec: number): number | null {
+  let lo = 0;
+  let hi = deps.length;
+  const targetMin = targetSec / 60;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (deps[mid] < targetMin) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < deps.length ? deps[lo] * 60 : null;
+}
+
+/**
+ * Next scheduled departure of pattern `p` at stop `stopIndex`, at or after
+ * clock `t` (seconds past midnight of the start service day, may exceed
+ * 86400). Returns the departure in the same clock frame, 'stranded' when the
+ * pattern has departure data but none remains in the service day, or null
+ * when the network has no departure data for this pattern (old network.json).
+ */
+export function nextDeparture(
+  p: Pattern, stopIndex: number, startDay: ServiceDay, t: number,
+): number | 'stranded' | null {
+  if (!p.departures) return null;
+  // express t in the GTFS frame of the service day in effect (6am boundary,
+  // mirroring serviceDayAt): localT may run past 86400 for 24:xx+ trips
+  const offset = Math.max(0, Math.floor((t - 6 * 3600) / DAY));
+  const day = serviceDayAt(startDay, t);
+  const localT = t - offset * DAY;
+  let sawData = false;
+  let best: number | null = null;
+  const deps = p.departures[day]?.[stopIndex];
+  if (deps?.length) {
+    sawData = true;
+    const d = searchDeps(deps, localT);
+    if (d != null) best = d + offset * DAY;
+  }
+  // before 6am the previous service day's 24:xx+ trips are still running;
+  // Sun->Sat is exact, the Weekday cases approximate (same limitation as
+  // serviceDayAt — the planner picks the start day to match the date)
+  if (localT < 6 * 3600 && offset === 0) {
+    const prev: Record<ServiceDay, ServiceDay> =
+      { Weekday: 'Weekday', Saturday: 'Weekday', Sunday: 'Saturday' };
+    const pdeps = p.departures[prev[startDay]]?.[stopIndex];
+    if (pdeps?.length) {
+      sawData = true;
+      const d = searchDeps(pdeps, localT + DAY);
+      if (d != null && (best === null || d - DAY < best)) best = d - DAY;
+    }
+  }
+  if (best != null) return best;
+  return sawData ? 'stranded' : null;
+}
+
 function waitSeconds(policy: WaitPolicy | undefined, headway: number | null): number {
   const h = headway ?? 1800;
-  if (policy === undefined || policy === 'half') return Math.round(h / 2);
+  // default is 'zero' (timed): assume the connection is timed and you board on
+  // arrival. The boarding wait is purely this term — per-station ride time comes
+  // from the GTFS hop data, which already includes dwell. riskSec still carries
+  // the full headway so the cost of missing a timed connection stays visible.
+  if (policy === undefined || policy === 'zero') return 0;
+  if (policy === 'half') return Math.round(h / 2);
   if (policy === 'full') return h;
-  if (policy === 'zero') return 0;
   return policy;
 }
 
@@ -277,11 +339,41 @@ export function evaluatePlan(
       const day = serviceDayAt(plan.serviceDay, t);
       const band = bandOf(t);
       const svc = headwayAt(p, day, band);
-      if (!svc.runs) {
-        r.errors.push(`${p.label} does not run in the ${BAND_NAMES[band]} band on ${day} (at ${fmtClock(t)})`);
-      }
+      // riskSec always carries the headway: even when schedule mode pins the
+      // exact departure, missing it costs a headway (overnight legs keep
+      // their risk flag regardless of mode)
       r.riskSec = svc.headwaySec;
-      r.waitSec = waitSeconds(leg.wait, svc.headwaySec);
+      const cutoff = plan.config.scheduleHeadwayCutoffSec ?? DEFAULT_SCHEDULE_CUTOFF_SEC;
+      // hybrid schedule mode: dense service stays statistical (½ headway);
+      // sparse or not-running snaps to the next real stop_times departure.
+      // An explicit per-leg numeric wait still wins — it's a deliberate note.
+      const useSchedule = plan.config.scheduleMode && typeof leg.wait !== 'number'
+        && (!svc.runs || svc.headwaySec == null || svc.headwaySec > cutoff);
+      let resolved = false;
+      if (useSchedule) {
+        const dep = nextDeparture(p, bi, plan.serviceDay, t);
+        if (dep === 'stranded') {
+          r.errors.push(`stranded — last train missed: no ${p.routeId} departure left at ${name(idx, leg.boardStationId)} after ${fmtClock(t)} (${day})`);
+          r.waitSec = svc.headwaySec ?? 1800; // keep the clock moving
+          resolved = true;
+        } else if (dep !== null) {
+          r.waitSec = dep - t;
+          r.scheduledDepSec = dep;
+          if (!svc.runs) {
+            r.warnings.push(`${p.label}: no ${BAND_NAMES[band]} service on ${day} — holding for the ${fmtClock(dep)} departure`);
+          }
+          resolved = true;
+        }
+        // dep === null: no departure data in the network; fall through
+      }
+      if (!resolved) {
+        if (!svc.runs) {
+          r.errors.push(`${p.label} does not run in the ${BAND_NAMES[band]} band on ${day} (at ${fmtClock(t)})`);
+        }
+        r.waitSec = plan.config.scheduleMode && typeof leg.wait !== 'number'
+          ? Math.round((svc.headwaySec ?? 1800) / 2)
+          : waitSeconds(leg.wait, svc.headwaySec);
+      }
       t += r.waitSec;
       r.departSec = t;
 

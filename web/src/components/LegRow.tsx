@@ -54,6 +54,9 @@ export function LegRow({ idx, leg, n, result, children }: LegRowProps) {
         </span>
         {result && (
           <span className="times">
+            {result.scheduledDepSec != null && (
+              <span title={`snapped to the scheduled ${fmtClock(result.scheduledDepSec)} departure`}>🕐 </span>
+            )}
             {result.waitSec > 0 && <span>wait {fmtDur(result.waitSec)} · </span>}
             <span>{fmtDur(result.moveSec)}</span>
             <br />

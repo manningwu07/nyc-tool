@@ -128,7 +128,12 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
               {pattern.direction === 'N' ? '↑' : '↓'} to {stationName(idx, pattern.stations[pattern.stations.length - 1])}
               <span className="muted"> · {pattern.stations.length - 1 - index} stops left</span>
             </span>
-            <span className="muted">every ~{headwaySec ? fmtDur(headwaySec) : '?'}</span>
+            <span className="muted" style={{ textAlign: 'right', lineHeight: 1.25 }} title={theoreticalDepartures(t, headwaySec)}>
+              {headwaySec != null
+                ? <><b style={{ color: 'var(--fg, #cdd6f4)' }}>next ~{fmtClock(t + Math.round(headwaySec / 2))}</b><br /></>
+                : null}
+              every ~{headwaySec ? fmtDur(headwaySec) : '?'}
+            </span>
           </div>
           {expanded === pattern.id && (
             <AlightPicker idx={idx} pattern={pattern} boardIndex={index} onPick={(alight) => {
@@ -143,6 +148,16 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
       ))}
     </div>
   );
+}
+
+/** Tooltip text: with only headways (no scheduled phase) the honest estimate
+ *  for someone arriving now is the next train at ~½ headway, then every headway
+ *  after. Lists the next few so you can eyeball the theoretical timetable. */
+function theoreticalDepartures(now: number, headwaySec: number | null): string {
+  if (headwaySec == null) return 'no headway data — assume long, unpredictable wait';
+  const first = now + Math.round(headwaySec / 2);
+  const times = [0, 1, 2, 3].map((k) => fmtClock(first + k * headwaySec));
+  return `theoretical departures (headway-based, no live schedule):\n~${times.join(', ~')}`;
 }
 
 function AlightPicker({ idx, pattern, boardIndex, onPick }: {

@@ -34,6 +34,10 @@ export interface Pattern {
    *  5 entries (one per band), null where no data */
   hops: Partial<Record<ServiceDay, (number | null)[]>>[];
   service: Partial<Record<ServiceDay, ServiceBand[]>>;
+  /** schedule mode: departures[day][stopIndex] = sorted departure times in
+   *  minutes past midnight of the service day (>1440 for GTFS 24:xx+
+   *  overnight trips); absent for hand-built fixtures / old network.json */
+  departures?: Partial<Record<ServiceDay, number[][]>>;
   tripCount: number;
   shapeId: string | null;
 }
@@ -81,8 +85,9 @@ export interface Network {
 
 // Plans --------------------------------------------------------------------
 
-/** wait policy for a ride leg: half headway (default), full headway
- * (pessimistic), zero (timed cross-platform), or explicit seconds */
+/** wait policy for a ride leg: zero (timed connection — the default; board on
+ * arrival, no platform wait), half headway, full headway (pessimistic), or
+ * explicit seconds */
 export type WaitPolicy = 'half' | 'full' | 'zero' | number;
 
 export interface RideLeg {
@@ -128,6 +133,12 @@ export interface PlanConfig {
   /** count Staten Island Railway stations toward coverage (target 493
    *  instead of the Guinness-official 472); default false */
   includeSIR?: boolean;
+  /** hybrid schedule mode: dense service (headway ≤ cutoff) keeps the
+   *  statistical ½-headway wait; sparse service snaps to the next actual
+   *  stop_times departure, and a missed last train is a hard error */
+  scheduleMode?: boolean;
+  /** headway above which schedule mode uses real departures; default 720 */
+  scheduleHeadwayCutoffSec?: number;
 }
 
 export interface Plan {
@@ -161,6 +172,9 @@ export interface LegResult {
   newlyCovered: string[];
   /** cost of missing one train here (headway at boarding) */
   riskSec: number | null;
+  /** schedule mode: clock sec of the actual departure this leg snapped to;
+   *  unset when the wait came from headway statistics */
+  scheduledDepSec?: number;
   perStop: StopTime[];
   errors: string[];
   warnings: string[];
