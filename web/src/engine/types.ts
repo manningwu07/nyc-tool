@@ -38,12 +38,28 @@ export interface Pattern {
   shapeId: string | null;
 }
 
+/** per-band (5 entries, aligned with BAND_NAMES) bus timing for one service
+ *  day; null where the bus has no scheduled service in that band */
+export interface BusBands {
+  rideSec: (number | null)[];
+  headwaySec: (number | null)[];
+}
+
 export interface TransferEdge {
   from: string;
   to: string;
   kind: 'in_system' | 'walk' | 'bus';
   sec: number;
   notes: string;
+  /** walk/bus shortcut edges start as unscouted drafts; ⚠ until confirmed
+   *  by street view / physical scouting (exit choice matters — see notes) */
+  confirmed?: boolean;
+  /** bus only: e.g. "Q52-SBS" */
+  routeLabel?: string;
+  /** bus only: manual walk-to-stop buffer in seconds */
+  accessSec?: number;
+  /** bus only: per-day, per-band ride/headway medians from add_bus_edge.py */
+  busService?: Partial<Record<ServiceDay, BusBands>>;
 }
 
 export interface RouteInfo {
@@ -85,6 +101,9 @@ export interface MoveLeg {
   toStationId: string;
   /** manual override; otherwise transfer edge / haversine estimate */
   sec?: number;
+  /** bus only: wait policy at the stop; defaults to 'full' (pessimistic —
+   *  buses bunch and sit in traffic) */
+  wait?: WaitPolicy;
 }
 
 export interface BufferLeg {

@@ -285,6 +285,12 @@ export function removeCustomTransfer(i: number) {
   setState((s) => ({ customTransfers: s.customTransfers.filter((_, j) => j !== i) }));
 }
 
+export function updateCustomTransfer(i: number, patch: Partial<TransferEdge>) {
+  setState((s) => ({
+    customTransfers: s.customTransfers.map((e, j) => (j === i ? { ...e, ...patch } : e)),
+  }));
+}
+
 // --- run mode ----------------------------------------------------------------
 
 export function clockSecNow(run: RunState): number {

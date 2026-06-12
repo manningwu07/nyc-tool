@@ -10,9 +10,10 @@ import LegEntry from './components/LegEntry';
 import CoveragePanel from './components/CoveragePanel';
 import Library from './components/Library';
 import Compare from './components/Compare';
+import Shortcuts from './components/Shortcuts';
 import RunMode from './run/RunMode';
 
-type Tab = 'plan' | 'add' | 'coverage' | 'library' | 'compare';
+type Tab = 'plan' | 'add' | 'coverage' | 'shortcuts' | 'library' | 'compare';
 
 export default function App() {
   const [net, setNet] = useState<Network | null>(null);
@@ -136,7 +137,7 @@ export default function App() {
         <MapView idx={idx} plan={plan} result={result} onSelect={(sid) => { setState({ selectedStationId: sid }); setTab('add'); }} />
         <div className="side">
           <div className="tabs">
-            {(['plan', 'add', 'coverage', 'library', 'compare'] as Tab[]).map((t) => (
+            {(['plan', 'add', 'coverage', 'shortcuts', 'library', 'compare'] as Tab[]).map((t) => (
               <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
                 {t === 'add' ? 'Add leg' : t[0].toUpperCase() + t.slice(1)}
               </button>
@@ -146,6 +147,7 @@ export default function App() {
             {tab === 'plan' && <PlanEditor idx={idx} plan={plan} result={result} />}
             {tab === 'add' && <LegEntry idx={idx} plan={plan} result={result} />}
             {tab === 'coverage' && <CoveragePanel idx={idx} result={result} />}
+            {tab === 'shortcuts' && <Shortcuts idx={idx} plan={plan} />}
             {tab === 'library' && <Library idx={idx} plan={plan} />}
             {tab === 'compare' && <Compare idx={idx} />}
           </div>

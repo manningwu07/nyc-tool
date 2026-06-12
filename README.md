@@ -9,10 +9,13 @@ offline-first live run mode — not an auto-solver.
 - `ingest/` — Python GTFS ingest. `ingest/data/` holds the raw MTA static GTFS
   (`gtfs_subway.zip`) and the data.ny.gov stations CSV (`stations.csv`).
   Produces `ingest/subway.db` (SQLite) and `web/public/network.json`.
+  `ingest/add_bus_edge.py` pulls a single route from a borough bus GTFS zip
+  and emits a bus TransferEdge JSON to paste into the app (Shortcuts tab).
 - `web/` — Vite + React + TypeScript single-page app (planner + live run PWA).
   - `src/engine/` — pure timing engine (`evaluatePlan`), unit-tested.
   - `src/components/` — map (MapLibre, blank offline style), plan editor,
-    smart leg entry, coverage/stranded panel, segment library, plan compare.
+    smart leg entry, coverage/stranded panel, segment library, plan compare,
+    Shortcut Finder (Dijkstra-ranked close-but-far station pairs).
   - `src/run/` — live run mode: big-button UI, drift retiming, missed-train,
     contingency splicing, run log export.
 
@@ -56,6 +59,18 @@ npm run build   # production PWA (service worker precaches network.json)
 - Risk per leg = headway at boarding (cost of one missed train); legs over
   10 min flagged ⚠ in the editor.
 - User-added strategic walk edges (haversine-estimated) persist in the app.
+  All shortcut edges start as ⚠ unconfirmed drafts until physically scouted
+  (notes field records which exit / street route / bus stop to use).
+- Shortcut Finder: ranks station pairs by `in-system time − est. walk time`
+  (in-system via Dijkstra over ride+transfer edges with ½-headway boarding
+  waits; walk = haversine × 1.35 street factor at a configurable pace,
+  default 10 min/mi). "Branch tips only" filter; bus mode raises the radius
+  to ~5 km. Already-connected pairs and same-complex pairs are excluded.
+- Bus legs (Guinness-legal scheduled transit): timed as walk-to-stop buffer +
+  FULL headway (pessimistic — buses bunch) + median ride for the time band,
+  always flagged HIGH RISK; in live mode the leg card surfaces its rail
+  fallback contingency unconditionally. Walk/bus only — no rideshare/bike
+  mode exists on purpose.
 - Contingency branches attach to a leg with a drift threshold; in live mode a
   triggered branch shows side-by-side finish times and one-tap **replaces all
   remaining legs**.

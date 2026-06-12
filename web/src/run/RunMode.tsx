@@ -76,10 +76,14 @@ export default function RunMode({ idx }: Props) {
   const finished = currentLeg === null;
   const coveredTotal = remaining.coveredCount;
 
-  // contingencies on the current leg whose threshold is crossed
+  // contingencies on the current leg whose threshold is crossed; bus legs
+  // always show their fallback (buses sit in traffic and don't show up)
   const triggered = currentLeg
-    ? (plan.contingencies[currentLeg.id] ?? []).filter((b) => drift > b.driftThresholdSec)
+    ? (plan.contingencies[currentLeg.id] ?? []).filter(
+        (b) => drift > b.driftThresholdSec || currentLeg.type === 'bus')
     : [];
+  const busNoFallback = currentLeg?.type === 'bus'
+    && (plan.contingencies[currentLeg.id] ?? []).length === 0;
 
   function advance() {
     if (!currentLeg) return;
@@ -164,6 +168,13 @@ export default function RunMode({ idx }: Props) {
           <div className="current">
             <div className="muted">leg {run.currentLegIndex + 1}/{plan.legs.length}</div>
             <CurrentLegView idx={idx} leg={currentLeg!} />
+            {currentLeg!.type === 'bus' && (
+              <div className="err" style={{ marginTop: 4 }}>
+                🚌 HIGH RISK bus leg{busNoFallback
+                  ? ' — NO rail fallback attached!'
+                  : ' — fallback below if it no-shows'}
+              </div>
+            )}
             {currentLegResult && (
               <div className="muted" style={{ marginTop: 6 }}>
                 {currentLegResult.waitSec > 0 && <>wait ~{fmtDur(currentLegResult.waitSec)} · </>}

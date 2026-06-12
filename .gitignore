@@ -27,3 +27,4 @@ web/coverage/
 ingest/subway.db
 ingest/data/gtfs/
 ingest/data/gtfs_subway.zip
+ingest/data/gtfs_*bus*.zip

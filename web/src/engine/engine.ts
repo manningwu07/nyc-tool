@@ -12,8 +12,10 @@ export interface NetworkIndex {
   net: Network;
   stationById: Map<string, Station>;
   patternById: Map<string, Pattern>;
-  /** "from|to" -> best transfer edge */
+  /** "from|to" -> best transfer edge (walk / in_system only) */
   transferByPair: Map<string, TransferEdge>;
+  /** "from|to" -> bus edge (directed as ingested; look up both ways) */
+  busByPair: Map<string, TransferEdge>;
   /** stationId -> patterns serving it (with stop index) */
   patternsByStation: Map<string, { pattern: Pattern; index: number }[]>;
   /** the Guinness 472 (non-SIR) */
@@ -26,8 +28,13 @@ export function buildIndex(net: Network): NetworkIndex {
   const stationById = new Map(net.stations.map((s) => [s.id, s]));
   const patternById = new Map(net.patterns.map((p) => [p.id, p]));
   const transferByPair = new Map<string, TransferEdge>();
+  const busByPair = new Map<string, TransferEdge>();
   for (const t of net.transfers) {
     const k = `${t.from}|${t.to}`;
+    if (t.kind === 'bus') {
+      busByPair.set(k, t);
+      continue; // a bus is never an implicit transfer between rides
+    }
     const prev = transferByPair.get(k);
     if (!prev || t.sec < prev.sec) transferByPair.set(k, t);
   }
@@ -43,11 +50,41 @@ export function buildIndex(net: Network): NetworkIndex {
     net.stations.filter((s) => s.countsTowardRecord).map((s) => s.id),
   );
   const allStationIds = new Set(net.stations.map((s) => s.id));
-  return { net, stationById, patternById, transferByPair, patternsByStation, recordStationIds, allStationIds };
+  return { net, stationById, patternById, transferByPair, busByPair, patternsByStation, recordStationIds, allStationIds };
 }
 
 export function transferBetween(idx: NetworkIndex, a: string, b: string): TransferEdge | null {
   return idx.transferByPair.get(`${a}|${b}`) ?? idx.transferByPair.get(`${b}|${a}`) ?? null;
+}
+
+export function busBetween(idx: NetworkIndex, a: string, b: string): TransferEdge | null {
+  return idx.busByPair.get(`${a}|${b}`) ?? idx.busByPair.get(`${b}|${a}`) ?? null;
+}
+
+/** bus ride/headway at (day, band) with the same nearest-band / nearest-day
+ *  fallback rides get; null where the route never runs */
+export function busTimingAt(edge: TransferEdge, day: ServiceDay, band: BandIndex):
+  { rideSec: number; headwaySec: number | null } | null {
+  const pick = (vals: (number | null)[] | undefined): number | null => {
+    if (!vals) return null;
+    if (vals[band] != null) return vals[band];
+    for (let off = 1; off < 5; off++) {
+      for (const b of [band + off, band - off]) {
+        if (b >= 0 && b < 5 && vals[b] != null) return vals[b];
+      }
+    }
+    return null;
+  };
+  const order: ServiceDay[] = day === 'Weekday'
+    ? ['Weekday', 'Saturday', 'Sunday']
+    : day === 'Saturday' ? ['Saturday', 'Sunday', 'Weekday'] : ['Sunday', 'Saturday', 'Weekday'];
+  for (const d of order) {
+    const bands = edge.busService?.[d];
+    const ride = pick(bands?.rideSec);
+    if (ride != null) return { rideSec: ride, headwaySec: pick(bands?.headwaySec) };
+  }
+  // hand-drafted edge with no GTFS bands: use flat sec, pessimistic headway
+  return edge.sec > 0 ? { rideSec: edge.sec, headwaySec: null } : null;
 }
 
 export function walkEstimateSec(idx: NetworkIndex, a: string, b: string): number {
@@ -60,7 +97,7 @@ export function walkEstimateSec(idx: NetworkIndex, a: string, b: string): number
 
 /** travel seconds for hop i of pattern, with graceful fallback across bands
  *  and days when the exact (day, band) cell has no scheduled data */
-function hopTravel(p: Pattern, i: number, day: ServiceDay, band: BandIndex):
+export function hopTravel(p: Pattern, i: number, day: ServiceDay, band: BandIndex):
   { sec: number; exact: boolean } | null {
   const tryDay = (d: ServiceDay): { sec: number; exact: boolean } | null => {
     const vals = p.hops[i]?.[d];
@@ -84,7 +121,7 @@ function hopTravel(p: Pattern, i: number, day: ServiceDay, band: BandIndex):
   return null;
 }
 
-function headwayAt(p: Pattern, day: ServiceDay, band: BandIndex):
+export function headwayAt(p: Pattern, day: ServiceDay, band: BandIndex):
   { runs: boolean; headwaySec: number | null } {
   const bands = p.service[day];
   if (!bands) return { runs: false, headwaySec: null };
@@ -152,16 +189,45 @@ export function evaluatePlan(
       r.arriveSec = t + leg.sec;
       t = r.arriveSec;
       r.departSec = r.startSec;
+    } else if (leg.type === 'bus') {
+      if (loc !== null && loc !== leg.fromStationId) {
+        r.warnings.push(`leg starts at ${name(idx, leg.fromStationId)} but you are at ${name(idx, loc)}`);
+      }
+      const edge = busBetween(idx, leg.fromStationId, leg.toStationId);
+      const timing = edge ? busTimingAt(edge, serviceDayAt(plan.serviceDay, t), bandOf(t)) : null;
+      if (!edge || !timing) {
+        r.errors.push(`no bus edge ${name(idx, leg.fromStationId)} → ${name(idx, leg.toStationId)} (define one in Shortcuts)`);
+      }
+      r.transferSec = edge?.accessSec ?? 120; // walk to the stop
+      t += r.transferSec;
+      const headway = timing?.headwaySec ?? 1800;
+      r.riskSec = headway;
+      // pessimistic by default: buses bunch and don't show up
+      r.waitSec = waitSeconds(leg.wait ?? 'full', headway);
+      t += r.waitSec;
+      r.departSec = t;
+      r.moveSec = leg.sec ?? timing?.rideSec
+        ?? Math.round(walkEstimateSec(idx, leg.fromStationId, leg.toStationId) / 3);
+      r.arriveSec = t + r.moveSec;
+      t = r.arriveSec;
+      loc = leg.toStationId;
+      r.endStationId = loc;
+      cover(loc, r.newlyCovered);
+      r.warnings.push(`HIGH RISK bus leg${edge?.routeLabel ? ` (${edge.routeLabel})` : ''} — attach a rail fallback contingency`);
+      if (edge && !edge.confirmed) r.warnings.push('unconfirmed bus edge — scout stop locations before relying on it');
     } else if (leg.type !== 'ride') {
       if (loc !== null && loc !== leg.fromStationId) {
         r.warnings.push(`leg starts at ${name(idx, leg.fromStationId)} but you are at ${name(idx, loc)}`);
       }
       let sec = leg.sec;
+      const edge = transferBetween(idx, leg.fromStationId, leg.toStationId);
       if (sec == null) {
-        const edge = transferBetween(idx, leg.fromStationId, leg.toStationId);
         sec = edge && edge.kind !== 'in_system'
           ? edge.sec
           : walkEstimateSec(idx, leg.fromStationId, leg.toStationId);
+      }
+      if (edge && edge.kind === 'walk' && edge.confirmed === false) {
+        r.warnings.push('unconfirmed walk edge — scout the street route before relying on it');
       }
       r.moveSec = Math.round(sec * plan.config.walkPaceMultiplier);
       r.departSec = t;

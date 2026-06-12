@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
-import { optionsFrom, transferBetween, walkEstimateSec } from '../engine/engine';
+import { busBetween, optionsFrom, transferBetween, walkEstimateSec } from '../engine/engine';
 import type { Pattern, Plan, PlanResult } from '../engine/types';
 import { fmtClock, fmtDur } from '../engine/time';
 import { addLeg, addCustomTransfer, setState, uid, updateActivePlan, useAppState } from '../store';
@@ -69,6 +69,7 @@ export default function LegEntry({ idx, plan, result }: Props) {
 
 function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: string; selected: string }) {
   const edge = transferBetween(idx, here, selected);
+  const bus = busBetween(idx, here, selected);
   const est = edge ? edge.sec : walkEstimateSec(idx, here, selected);
   return (
     <div className="section">
@@ -80,11 +81,19 @@ function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: str
         }}>
           🚶 walk there (~{fmtDur(est)}{edge ? '' : ' est.'})
         </button>
+        {bus && (
+          <button onClick={() => {
+            addLeg({ id: uid(), type: 'bus', fromStationId: here, toStationId: selected });
+            setState({ selectedStationId: null });
+          }}>
+            🚌 {bus.routeLabel ?? 'bus'} there{bus.confirmed ? '' : ' ⚠'}
+          </button>
+        )}
         {!edge && (
           <button onClick={() => {
             addCustomTransfer({
               from: here, to: selected, kind: 'walk', sec: est,
-              notes: 'user-added walk edge',
+              notes: 'user-added walk edge', confirmed: false,
             });
           }}>
             + save as walk edge
