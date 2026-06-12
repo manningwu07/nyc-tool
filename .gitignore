@@ -27,4 +27,3 @@ web/coverage/
 ingest/subway.db
 ingest/data/gtfs/
 ingest/data/gtfs_subway.zip
-web/public/network.json
