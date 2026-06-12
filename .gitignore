@@ -1,0 +1,30 @@
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Env/local config
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node/Vite
+node_modules/
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+
+# Generated ingest/data artifacts
+ingest/subway.db
+ingest/data/gtfs/
+ingest/data/gtfs_subway.zip
+web/public/network.json
