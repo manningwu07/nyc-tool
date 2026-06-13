@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
-import { busBetween, optionsFrom, transferBetween, walkEstimateSec } from '../engine/engine';
-import type { Pattern, Plan, PlanResult } from '../engine/types';
+import { busBetween, nextDeparture, optionsFrom, transferBetween, walkEstimateSec, walkSecAtPace } from '../engine/engine';
+import type { Pattern, Plan, PlanResult, ServiceDay } from '../engine/types';
 import { fmtClock, fmtDur } from '../engine/time';
 import { addLeg, addCustomTransfer, setState, uid, updateActivePlan, useAppState } from '../store';
 import { RouteBadge, stationName } from './LegRow';
@@ -70,7 +70,10 @@ export default function LegEntry({ idx, plan, result }: Props) {
 function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: string; selected: string }) {
   const edge = transferBetween(idx, here, selected);
   const bus = busBetween(idx, here, selected);
-  const est = edge ? edge.sec : walkEstimateSec(idx, here, selected);
+  // edge times stay normalized to the 1.4 m/s base (that's what gets saved);
+  // the preview shows the 10 min/mi timing the engine will actually use
+  const baseSec = edge ? edge.sec : walkEstimateSec(idx, here, selected);
+  const est = walkSecAtPace(baseSec);
   return (
     <div className="section">
       <h3>Selected: {stationName(idx, selected)}</h3>
@@ -92,7 +95,7 @@ function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: str
         {!edge && (
           <button onClick={() => {
             addCustomTransfer({
-              from: here, to: selected, kind: 'walk', sec: est,
+              from: here, to: selected, kind: 'walk', sec: baseSec,
               notes: 'user-added walk edge', confirmed: false,
             });
           }}>
@@ -107,9 +110,21 @@ function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: str
 function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; here: string; t: number }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const { rides } = optionsFrom(idx, here, plan.serviceDay, t);
-  // collapse near-duplicate options: keep the most frequent pattern per (route, direction, next stop)
+  // rank by the real next departure where the timetable has one (short-turn
+  // variants share a headway band but leave at different times), falling
+  // back to ½ headway; then collapse near-duplicate options, keeping the
+  // soonest pattern per (route, direction, next stop, terminal)
+  const ranked = rides
+    .map((r) => {
+      const dep = nextDeparture(r.pattern, r.index, plan.serviceDay, t);
+      const sortKey = typeof dep === 'number'
+        ? dep
+        : dep === 'stranded' ? Infinity : t + (r.headwaySec ?? 1800) / 2;
+      return { ...r, sortKey };
+    })
+    .sort((a, b) => a.sortKey - b.sortKey);
   const seen = new Set<string>();
-  const deduped = rides.filter(({ pattern, index }) => {
+  const deduped = ranked.filter(({ pattern, index }) => {
     const k = `${pattern.routeId}|${pattern.direction}|${pattern.stations[index + 1]}|${pattern.stations[pattern.stations.length - 1]}`;
     if (seen.has(k)) return false;
     seen.add(k);
@@ -128,12 +143,7 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
               {pattern.direction === 'N' ? '↑' : '↓'} to {stationName(idx, pattern.stations[pattern.stations.length - 1])}
               <span className="muted"> · {pattern.stations.length - 1 - index} stops left</span>
             </span>
-            <span className="muted" style={{ textAlign: 'right', lineHeight: 1.25 }} title={theoreticalDepartures(t, headwaySec)}>
-              {headwaySec != null
-                ? <><b style={{ color: 'var(--fg, #cdd6f4)' }}>next ~{fmtClock(t + Math.round(headwaySec / 2))}</b><br /></>
-                : null}
-              every ~{headwaySec ? fmtDur(headwaySec) : '?'}
-            </span>
+            <Departures pattern={pattern} index={index} day={plan.serviceDay} t={t} headwaySec={headwaySec} />
           </div>
           {expanded === pattern.id && (
             <AlightPicker idx={idx} pattern={pattern} boardIndex={index} onPick={(alight) => {
@@ -150,14 +160,54 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
   );
 }
 
-/** Tooltip text: with only headways (no scheduled phase) the honest estimate
- *  for someone arriving now is the next train at ~½ headway, then every headway
- *  after. Lists the next few so you can eyeball the theoretical timetable. */
-function theoreticalDepartures(now: number, headwaySec: number | null): string {
-  if (headwaySec == null) return 'no headway data — assume long, unpredictable wait';
-  const first = now + Math.round(headwaySec / 2);
-  const times = [0, 1, 2, 3].map((k) => fmtClock(first + k * headwaySec));
-  return `theoretical departures (headway-based, no live schedule):\n~${times.join(', ~')}`;
+/** the next n scheduled departures of a pattern at a stop (clock sec) */
+function upcomingDepartures(p: Pattern, index: number, day: ServiceDay, t: number, n: number): number[] {
+  const out: number[] = [];
+  let cur = t;
+  for (let k = 0; k < n; k++) {
+    const d = nextDeparture(p, index, day, cur);
+    if (typeof d !== 'number') break;
+    out.push(d);
+    cur = d + 60; // departures are floored to the minute
+  }
+  return out;
+}
+
+/** real-timetable departures column; ½-headway estimate only when the
+ *  network has no stop_times data for this pattern */
+function Departures({ pattern, index, day, t, headwaySec }: {
+  pattern: Pattern; index: number; day: ServiceDay; t: number; headwaySec: number | null;
+}) {
+  const deps = upcomingDepartures(pattern, index, day, t, 8);
+  const style = { textAlign: 'right' as const, lineHeight: 1.25 };
+  if (deps.length > 0) {
+    const waitMin = Math.max(0, Math.round((deps[0] - t) / 60));
+    return (
+      <span className="muted" style={style} title={`scheduled departures:\n${deps.map(fmtClock).join(', ')}`}>
+        <b style={{ color: 'var(--fg, #cdd6f4)' }}>next in {waitMin} min ({fmtClock(deps[0])})</b><br />
+        {deps.length > 1
+          ? <>then {deps.slice(1, 4).map(fmtClock).join(', ')}</>
+          : <span style={{ color: 'var(--red, #f87171)' }}>last train of the day</span>}
+      </span>
+    );
+  }
+  if (nextDeparture(pattern, index, day, t) === 'stranded') {
+    return (
+      <span className="muted" style={style}>
+        <b style={{ color: 'var(--red, #f87171)' }}>no more trains today</b><br />
+        last one is gone
+      </span>
+    );
+  }
+  // no schedule data shipped for this pattern: honest headway guess
+  return (
+    <span className="muted" style={style} title="no stop_times data — estimate is ½ headway">
+      {headwaySec != null
+        ? <><b style={{ color: 'var(--fg, #cdd6f4)' }}>next in ~{Math.max(1, Math.round(headwaySec / 2 / 60))} min ({fmtClock(t + Math.round(headwaySec / 2))})</b><br /></>
+        : null}
+      every ~{headwaySec ? fmtDur(headwaySec) : '?'}
+    </span>
+  );
 }
 
 function AlightPicker({ idx, pattern, boardIndex, onPick }: {

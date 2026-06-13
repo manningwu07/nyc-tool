@@ -106,6 +106,10 @@ export interface MoveLeg {
   toStationId: string;
   /** manual override; otherwise transfer edge / haversine estimate */
   sec?: number;
+  /** walk only: pace for THIS leg in min/mile (plug in real-world numbers —
+   *  traffic lights, stairs, cardio). Beats the plan-wide pace multiplier;
+   *  an explicit `sec` still beats both. */
+  paceMinPerMi?: number;
   /** bus only: wait policy at the stop; defaults to 'full' (pessimistic —
    *  buses bunch and sit in traffic) */
   wait?: WaitPolicy;

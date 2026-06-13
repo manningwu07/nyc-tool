@@ -170,15 +170,37 @@ describe('ride legs', () => {
 });
 
 describe('walk legs', () => {
-  it('uses walk edge time scaled by pace multiplier', () => {
+  it('times walks at the default 10 min/mi pace', () => {
     const res = evaluatePlan(idx, plan({
       legs: [
         { id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'B' },
         { id: '2', type: 'walk', fromStationId: 'B', toStationId: 'D' },
       ],
     }));
-    expect(res.legs[1].moveSec).toBe(240); // 300 * 0.8
+    // edge 300s at the 1.4 m/s base = 420 street meters; at 10 min/mi:
+    // 420 / 1609.34 * 600 ≈ 157s
+    expect(res.legs[1].moveSec).toBe(157);
     expect(res.covered).toContain('D');
+  });
+
+  it('per-leg pace override re-times the walk from its street distance', () => {
+    const res = evaluatePlan(idx, plan({
+      legs: [
+        { id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'B' },
+        { id: '2', type: 'walk', fromStationId: 'B', toStationId: 'D', paceMinPerMi: 20 },
+      ],
+    }));
+    expect(res.legs[1].moveSec).toBe(313); // 420m at 20 min/mi
+  });
+
+  it('user-entered walk time is used verbatim and beats everything', () => {
+    const res = evaluatePlan(idx, plan({
+      legs: [
+        { id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'B' },
+        { id: '2', type: 'walk', fromStationId: 'B', toStationId: 'D', sec: 100, paceMinPerMi: 20 },
+      ],
+    }));
+    expect(res.legs[1].moveSec).toBe(100); // no multiplier, no pace scaling
   });
 });
 

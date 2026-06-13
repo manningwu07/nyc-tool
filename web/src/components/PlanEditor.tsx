@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
-import type { Plan, PlanResult, WaitPolicy } from '../engine/types';
+import type { Leg, Pattern, Plan, PlanResult, WaitPolicy } from '../engine/types';
 import { fmtDur } from '../engine/time';
 import { moveLeg, removeLeg, updateLeg, updateActivePlan, useAppState, attachContingency, removeContingency, uid } from '../store';
-import { LegRow, stationName } from './LegRow';
+import { LegRow, RouteBadge, stationName } from './LegRow';
 import StationPicker from './StationPicker';
 
 interface Props {
@@ -16,6 +16,7 @@ export default function PlanEditor({ idx, plan, result }: Props) {
   const s = useAppState();
   const [dragId, setDragId] = useState<string | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
 
   return (
     <div>
@@ -106,6 +107,13 @@ export default function PlanEditor({ idx, plan, result }: Props) {
           >
             <LegRow idx={idx} plan={plan} leg={leg} n={i + 1} result={result?.legs[i]}>
               <div className="actions">
+                <button
+                  className={editId === leg.id ? 'primary' : ''}
+                  onClick={() => setEditId(editId === leg.id ? null : leg.id)}
+                  title="change this leg's train, stops, or destination in place"
+                >
+                  {editId === leg.id ? 'done' : 'edit'}
+                </button>
                 {leg.type === 'ride' && (
                   <label className="muted">
                     wait{' '}
@@ -129,14 +137,155 @@ export default function PlanEditor({ idx, plan, result }: Props) {
                     {typeof leg.wait === 'number' && <span> ({fmtDur(leg.wait)})</span>}
                   </label>
                 )}
+                {leg.type === 'walk' && (
+                  <label className="muted" title="how long this A→B actually takes (plug in your real number) — empty estimates from distance at 10 min/mi">
+                    time{' '}
+                    <input
+                      style={{ width: 50 }}
+                      type="number" step="0.5" min="0" max="120"
+                      placeholder="auto"
+                      value={leg.sec != null ? Math.round(leg.sec / 6) / 10 : ''}
+                      onChange={(e) => updateLeg(leg.id, {
+                        sec: e.target.value === '' ? undefined : Math.round(Number(e.target.value) * 60),
+                      })}
+                    /> min
+                  </label>
+                )}
                 <span className="spacer" style={{ flex: 1 }} />
                 <ContingencyControls idx={idx} plan={plan} legId={leg.id} segments={s.segments} />
                 <button className="danger" onClick={() => removeLeg(leg.id)}>delete</button>
               </div>
+              {editId === leg.id && <EditLegPanel idx={idx} leg={leg} />}
             </LegRow>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** distinct patterns that stop at `boardStationId` with at least one stop
+ *  onward, deduped by route + direction + terminal (same collapsing the
+ *  Add-leg list uses) so the train dropdown isn't 200 near-identical rows */
+function ridePatternsAt(idx: NetworkIndex, boardStationId: string): Pattern[] {
+  const seen = new Set<string>();
+  const out: Pattern[] = [];
+  for (const p of idx.net.patterns) {
+    const bi = p.stations.indexOf(boardStationId);
+    if (bi < 0 || bi >= p.stations.length - 1) continue;
+    const key = `${p.routeId}|${p.direction}|${p.stations[p.stations.length - 1]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out.sort((a, b) => a.routeId.localeCompare(b.routeId));
+}
+
+/** Inline editor: change a leg's content in place (train, board/alight stops,
+ *  or walk/bus endpoints) instead of deleting and rebuilding everything after
+ *  it. The engine re-chains legs on every change — if a board no longer lines
+ *  up with the previous leg's end it auto-inserts a transfer and flags it,
+ *  so edits are non-destructive and self-correcting. */
+function EditLegPanel({ idx, leg }: { idx: NetworkIndex; leg: Leg }) {
+  if (leg.type === 'ride') {
+    const pattern = idx.patternById.get(leg.patternId);
+    if (!pattern) return <div className="muted detail">unknown pattern — delete and re-add this leg</div>;
+    const patterns = ridePatternsAt(idx, leg.boardStationId);
+    const boardIdx = pattern.stations.indexOf(leg.boardStationId);
+
+    return (
+      <div className="detail rowflex" style={{ gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label className="muted">
+          train{' '}
+          <select
+            value={leg.patternId}
+            onChange={(e) => {
+              const np = idx.patternById.get(e.target.value);
+              if (!np) return;
+              // keep boarding at the same station if the new train serves it,
+              // otherwise board at its origin; alight at the new terminal
+              const nb = np.stations.includes(leg.boardStationId) ? leg.boardStationId : np.stations[0];
+              const nbi = np.stations.indexOf(nb);
+              const na = np.stations.includes(leg.alightStationId) && np.stations.indexOf(leg.alightStationId) > nbi
+                ? leg.alightStationId
+                : np.stations[np.stations.length - 1];
+              updateLeg(leg.id, { patternId: np.id, boardStationId: nb, alightStationId: na });
+            }}
+          >
+            {patterns.every((p) => p.id !== leg.patternId) && (
+              <option value={leg.patternId}>{pattern.routeId} (current)</option>
+            )}
+            {patterns.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.routeId} {p.direction === 'N' ? '↑' : '↓'} → {stationName(idx, p.stations[p.stations.length - 1])}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="muted">
+          board{' '}
+          <select
+            value={leg.boardStationId}
+            onChange={(e) => {
+              const nb = e.target.value;
+              const nbi = pattern.stations.indexOf(nb);
+              const ai = pattern.stations.indexOf(leg.alightStationId);
+              // keep alight strictly after the new board
+              const na = ai > nbi ? leg.alightStationId : pattern.stations[pattern.stations.length - 1];
+              updateLeg(leg.id, { boardStationId: nb, alightStationId: na });
+            }}
+          >
+            {pattern.stations.slice(0, -1).map((sid) => (
+              <option key={sid} value={sid}>{stationName(idx, sid)}</option>
+            ))}
+          </select>
+        </label>
+        <label className="muted">
+          alight{' '}
+          <select
+            value={leg.alightStationId}
+            onChange={(e) => updateLeg(leg.id, { alightStationId: e.target.value })}
+          >
+            {pattern.stations.slice(boardIdx + 1).map((sid) => (
+              <option key={sid} value={sid}>{stationName(idx, sid)}</option>
+            ))}
+          </select>
+        </label>
+        <span className="muted"><RouteBadge idx={idx} routeId={pattern.routeId} /> {pattern.stations.length - 1 - boardIdx} stops onward</span>
+      </div>
+    );
+  }
+
+  if (leg.type === 'walk' || leg.type === 'bus') {
+    return (
+      <div className="detail rowflex" style={{ gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label className="muted">
+          from{' '}
+          <StationPicker idx={idx} value={leg.fromStationId}
+            onChange={(sid) => updateLeg(leg.id, { fromStationId: sid })} />
+        </label>
+        <label className="muted">
+          to{' '}
+          <StationPicker idx={idx} value={leg.toStationId}
+            onChange={(sid) => updateLeg(leg.id, { toStationId: sid })} />
+        </label>
+      </div>
+    );
+  }
+
+  // buffer
+  const bufferSec = leg.type === 'wait' ? leg.sec : 0;
+  return (
+    <div className="detail rowflex" style={{ gap: 8, alignItems: 'center' }}>
+      <label className="muted">
+        buffer (min){' '}
+        <input
+          style={{ width: 60 }}
+          type="number" step="0.5" min="0"
+          value={Math.round(bufferSec / 6) / 10}
+          onChange={(e) => updateLeg(leg.id, { sec: Math.round(Number(e.target.value) * 60) })}
+        />
+      </label>
     </div>
   );
 }

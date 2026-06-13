@@ -181,6 +181,6 @@ describe('unconfirmed walk edges', () => {
       legs: [{ id: '1', type: 'walk', fromStationId: 'B', toStationId: 'E' }],
     }));
     expect(res.legs[0].warnings.join(' ')).toMatch(/unconfirmed walk edge/);
-    expect(res.legs[0].moveSec).toBe(200);
+    expect(res.legs[0].moveSec).toBe(104); // 200s base = 280m, at 10 min/mi
   });
 });

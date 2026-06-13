@@ -5,8 +5,10 @@ import type {
 import { BAND_NAMES } from './types';
 import { bandOf, haversineMeters, serviceDayAt, fmtClock, DAY } from './time';
 
-const WALK_SPEED_MPS = 1.4; // city walking pace; pace multiplier scales this
+const WALK_SPEED_MPS = 1.4; // base used to normalize edge times to meters
 const WALK_PATH_FACTOR = 1.3; // streets are not straight lines
+/** walk legs default to a 10 min/mi jog — we're speedrunning, not strolling */
+const DEFAULT_WALK_PACE_MIN_PER_MI = 10;
 
 /** schedule mode: headway above which the wait snaps to real departures */
 export const DEFAULT_SCHEDULE_CUTOFF_SEC = 720;
@@ -88,6 +90,13 @@ export function busTimingAt(edge: TransferEdge, day: ServiceDay, band: BandIndex
   }
   // hand-drafted edge with no GTFS bands: use flat sec, pessimistic headway
   return edge.sec > 0 ? { rideSec: edge.sec, headwaySec: null } : null;
+}
+
+/** time a walk leg at a min/mi pace; edge/estimate times are normalized to
+ *  the 1.4 m/s base, so they double as a street-distance measure */
+export function walkSecAtPace(baseSec: number, paceMinPerMi = DEFAULT_WALK_PACE_MIN_PER_MI): number {
+  const meters = baseSec * WALK_SPEED_MPS;
+  return Math.round((meters / 1609.34) * paceMinPerMi * 60);
 }
 
 export function walkEstimateSec(idx: NetworkIndex, a: string, b: string): number {
@@ -291,7 +300,9 @@ export function evaluatePlan(
       if (edge && edge.kind === 'walk' && edge.confirmed === false) {
         r.warnings.push('unconfirmed walk edge — scout the street route before relying on it');
       }
-      r.moveSec = Math.round(sec * plan.config.walkPaceMultiplier);
+      r.moveSec = leg.sec != null
+        ? Math.round(sec) // user-entered ETA for this A→B: trust it verbatim
+        : walkSecAtPace(sec, leg.paceMinPerMi);
       r.departSec = t;
       r.arriveSec = t + r.moveSec;
       t = r.arriveSec;
