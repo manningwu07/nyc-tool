@@ -51,6 +51,28 @@ export function buildIndex(net: Network): NetworkIndex {
       arr.push({ pattern: p, index });
     });
   }
+  // Reconcile each station's route badges from the patterns that actually serve
+  // it. The ingested `routes` field misses some lines (e.g. the F at 57 St and
+  // Roosevelt Island), so trust the pattern stop-lists and merge in anything
+  // missing. Express/shuttle variants collapse to their displayed badge.
+  const badgeFor = (routeId: string): string => {
+    if (routeId === '6X') return '6';
+    if (routeId === '7X') return '7';
+    if (routeId === 'FX') return 'F';
+    if (routeId === 'GS' || routeId === 'FS' || routeId === 'H') return 'S';
+    if (routeId === 'SI') return 'SIR';
+    return routeId;
+  };
+  for (const s of net.stations) {
+    const seen = new Set(s.routes);
+    for (const { pattern } of patternsByStation.get(s.id) ?? []) {
+      const badge = badgeFor(pattern.routeId);
+      if (!seen.has(badge)) {
+        seen.add(badge);
+        s.routes.push(badge);
+      }
+    }
+  }
   const recordStationIds = new Set(
     net.stations.filter((s) => s.countsTowardRecord).map((s) => s.id),
   );
