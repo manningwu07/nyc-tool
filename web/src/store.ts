@@ -62,17 +62,24 @@ function freshPlan(name = 'Plan 1'): Plan {
   };
 }
 
-function load(): AppState {
+function normalizeLoadedState(s: AppState): AppState {
+  s.selectedStationId = null;
+  s.attempts ??= [];
+  s.attempts.forEach((a) => { a.signature ??= planSignature(a.plan); });
+  return s;
+}
+
+function readStoredState(): AppState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const s = JSON.parse(raw) as AppState;
-      s.selectedStationId = null;
-      s.attempts ??= [];
-      s.attempts.forEach((a) => { a.signature ??= planSignature(a.plan); });
-      return s;
+      return normalizeLoadedState(JSON.parse(raw) as AppState);
     }
   } catch { /* fall through to fresh state */ }
+  return null;
+}
+
+function freshState(): AppState {
   const p = freshPlan();
   return {
     plans: [p], activePlanId: p.id, comparePlanId: null, segments: [],
@@ -80,14 +87,40 @@ function load(): AppState {
   };
 }
 
+function load(): AppState {
+  return readStoredState() ?? freshState();
+}
+
 let state: AppState = load();
 const listeners = new Set<() => void>();
+
+function notify() {
+  listeners.forEach((l) => l());
+}
+
+function latestWriteBase(): AppState {
+  const stored = readStoredState();
+  return stored ? { ...stored, selectedStationId: state.selectedStationId } : state;
+}
 
 function emit() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, selectedStationId: null }));
   } catch { /* storage full/unavailable: state stays in memory */ }
-  listeners.forEach((l) => l());
+  notify();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY || e.newValue == null) return;
+    try {
+      state = {
+        ...normalizeLoadedState(JSON.parse(e.newValue) as AppState),
+        selectedStationId: state.selectedStationId,
+      };
+      notify();
+    } catch { /* ignore malformed cross-tab writes */ }
+  });
 }
 
 export function getState(): AppState {
@@ -95,8 +128,9 @@ export function getState(): AppState {
 }
 
 export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
-  const p = typeof patch === 'function' ? patch(state) : patch;
-  state = { ...state, ...p };
+  const base = latestWriteBase();
+  const p = typeof patch === 'function' ? patch(base) : patch;
+  state = { ...base, ...p };
   emit();
 }
 
@@ -125,8 +159,10 @@ export function updatePlan(planId: string, fn: (p: Plan) => Plan) {
 }
 
 export function updateActivePlan(fn: (p: Plan) => Plan) {
-  const p = activePlan();
-  if (p) updatePlan(p.id, fn);
+  setState((s) => {
+    if (!s.activePlanId) return {};
+    return { plans: s.plans.map((p) => (p.id === s.activePlanId ? fn(p) : p)) };
+  });
 }
 
 export function addLeg(leg: Leg, atIndex?: number) {
