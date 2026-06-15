@@ -121,6 +121,12 @@ input, select {
 .leg .actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
 .leg .risk { color: var(--amber); font-weight: 600; }
 .leg.dragover { outline: 2px dashed var(--blue); }
+.leg.selected { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 16%, var(--panel2)); }
+.leg.selected .row1 { user-select: none; }
+
+.selbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.selbar b { color: var(--blue); }
+.selbar-hint { margin-bottom: 8px; font-size: 13px; }
 
 .options .opt {
   display: flex; gap: 8px; align-items: center;

@@ -138,10 +138,17 @@ export function addLeg(leg: Leg, atIndex?: number) {
 }
 
 export function removeLeg(legId: string) {
+  removeLegs([legId]);
+}
+
+/** delete several legs at once (multiselect), dropping their contingencies too */
+export function removeLegs(legIds: string[]) {
+  const drop = new Set(legIds);
+  if (drop.size === 0) return;
   updateActivePlan((p) => {
     const cont = { ...p.contingencies };
-    delete cont[legId];
-    return { ...p, legs: p.legs.filter((l) => l.id !== legId), contingencies: cont };
+    for (const id of drop) delete cont[id];
+    return { ...p, legs: p.legs.filter((l) => !drop.has(l.id)), contingencies: cont };
   });
 }
 

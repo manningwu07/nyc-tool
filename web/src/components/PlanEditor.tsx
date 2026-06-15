@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
 import type { Leg, Pattern, Plan, PlanResult, WaitPolicy } from '../engine/types';
 import { fmtDur } from '../engine/time';
-import { moveLeg, removeLeg, updateLeg, updateActivePlan, useAppState, attachContingency, removeContingency, uid } from '../store';
+import { moveLeg, removeLeg, removeLegs, updateLeg, updateActivePlan, useAppState, attachContingency, removeContingency, uid } from '../store';
 import { LegRow, RouteBadge, stationName } from './LegRow';
 import StationPicker from './StationPicker';
 
@@ -17,6 +17,68 @@ export default function PlanEditor({ idx, plan, result }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
+  // multiselect: shift-click ranges, cmd/ctrl-click toggles, ⌫/Del removes
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+
+  // drop selections that point at legs which no longer exist (e.g. after edits)
+  const legIds = plan.legs.map((l) => l.id).join(',');
+  useEffect(() => {
+    setSelected((prev) => {
+      const live = new Set(plan.legs.map((l) => l.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [legIds]);
+
+  const clearSelection = () => { setSelected(new Set()); setAnchorId(null); };
+
+  function selectLeg(legId: string, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
+    const ids = plan.legs.map((l) => l.id);
+    if (e.shiftKey && anchorId) {
+      // contiguous range from the anchor to the clicked leg
+      const a = ids.indexOf(anchorId);
+      const b = ids.indexOf(legId);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelected(new Set(ids.slice(lo, hi + 1)));
+        return;
+      }
+    }
+    // cmd/ctrl (or shift with no anchor) toggles the single leg
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(legId)) next.delete(legId); else next.add(legId);
+      return next;
+    });
+    setAnchorId(legId);
+  }
+
+  function deleteSelected() {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    if (!confirm(`Delete ${ids.length} leg${ids.length === 1 ? '' : 's'}? This can't be undone.`)) return;
+    removeLegs(ids);
+    clearSelection();
+  }
+
+  // keyboard: ⌫/Del deletes the selection, Esc clears it
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (typing) return;
+      if (e.key === 'Escape') { clearSelection(); return; }
+      if ((e.key === 'Backspace' || e.key === 'Delete') && selected.size > 0) {
+        e.preventDefault();
+        deleteSelected();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, anchorId, plan.legs]);
 
   return (
     <div>
@@ -69,6 +131,17 @@ export default function PlanEditor({ idx, plan, result }: Props) {
         {plan.legs.length === 0 && (
           <div className="muted">No legs yet. Click a station on the map or use the “Add leg” tab.</div>
         )}
+        {plan.legs.length > 0 && (
+          selected.size > 0 ? (
+            <div className="selbar">
+              <b>{selected.size} selected</b>
+              <button className="danger" onClick={deleteSelected}>delete ⌫</button>
+              <button onClick={clearSelection}>clear (Esc)</button>
+            </div>
+          ) : (
+            <div className="muted selbar-hint">Shift-click legs to select a range (⌘/Ctrl-click to toggle), then ⌫ to delete.</div>
+          )
+        )}
         {plan.legs.map((leg, i) => (
           <div
             key={leg.id}
@@ -82,7 +155,15 @@ export default function PlanEditor({ idx, plan, result }: Props) {
             onDragEnd={() => { setDragId(null); setOverIndex(null); }}
             className={overIndex === i && dragId ? 'dragover' : ''}
           >
-            <LegRow idx={idx} plan={plan} leg={leg} n={i + 1} result={result?.legs[i]}>
+            <LegRow
+              idx={idx}
+              plan={plan}
+              leg={leg}
+              n={i + 1}
+              result={result?.legs[i]}
+              selected={selected.has(leg.id)}
+              onSelectClick={(e) => selectLeg(leg.id, e)}
+            >
               <div className="actions">
                 <button
                   className={editId === leg.id ? 'primary' : ''}

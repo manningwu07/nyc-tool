@@ -34,18 +34,32 @@ interface LegRowProps {
   leg: Leg;
   n: number;
   result?: LegResult;
+  selected?: boolean;
+  /** modifier-click (shift/cmd/ctrl) on the row — drives multiselect */
+  onSelectClick?: (e: React.MouseEvent) => void;
   children?: React.ReactNode; // action buttons etc.
 }
 
-export function LegRow({ idx, leg, n, result, children }: LegRowProps) {
+export function LegRow({ idx, leg, n, result, selected, onSelectClick, children }: LegRowProps) {
   const [open, setOpen] = useState(false);
   const { badge, text } = legSummary(idx, leg);
   const hasError = (result?.errors.length ?? 0) > 0;
   const highRisk = result?.riskSec != null && result.riskSec > 600;
 
   return (
-    <div className={`leg${hasError ? ' error' : ''}`}>
-      <div className="row1" onClick={() => setOpen(!open)} style={{ cursor: 'pointer' }}>
+    <div className={`leg${hasError ? ' error' : ''}${selected ? ' selected' : ''}`}>
+      <div
+        className="row1"
+        onClick={(e) => {
+          // shift/cmd/ctrl click selects the row instead of expanding it
+          if (onSelectClick && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+            onSelectClick(e);
+            return;
+          }
+          setOpen(!open);
+        }}
+        style={{ cursor: 'pointer' }}
+      >
         <span className="muted" style={{ width: 18, textAlign: 'right' }}>{n}</span>
         {badge ? <RouteBadge idx={idx} routeId={badge} /> : <span className="badge" style={{ background: '#374151' }}>{leg.type === 'wait' ? '⏸' : '🚶'}</span>}
         <span style={{ flex: 1, minWidth: 0 }}>
