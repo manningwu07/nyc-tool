@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildIndex, evaluatePlan, nextDeparture, optionsFrom } from './engine';
+import { buildIndex, evaluatePlan, nextDeparture, optionsFrom, SAME_STATION_TRANSFER_SEC } from './engine';
 import { bandOf, serviceDayAt, fmtDur } from './time';
 import type { Network, Plan, ServiceBand } from './types';
 
@@ -121,14 +121,17 @@ describe('ride legs', () => {
     expect(res.elapsedSec).toBe(600);
   });
 
-  it('defaults to a timed (zero) boarding wait', () => {
+  it('defaults to the real next-train departure (no wait override)', () => {
+    // start 12:00; next L departure at A is 12:05 → 300s wait, pinned to the
+    // timetable. This is the default — no schedule-mode flag needed.
     const res = evaluatePlan(idx, plan({
       legs: [{ id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'D' }],
     }));
     const leg = res.legs[0];
-    expect(leg.waitSec).toBe(0);
+    expect(leg.waitSec).toBe(300);
+    expect(leg.scheduledDepSec).toBe(725 * 60);
     expect(leg.riskSec).toBe(600); // full headway still surfaced as the miss cost
-    expect(res.elapsedSec).toBe(300); // ride only, no wait
+    expect(res.elapsedSec).toBe(600); // 300 wait + 300 ride
   });
 
   it('honors wait overrides', () => {
@@ -158,14 +161,25 @@ describe('ride legs', () => {
     expect(loose.covered.sort()).toEqual(['A', 'B', 'C', 'D']);
   });
 
-  it('applies same-station transfer time between consecutive rides', () => {
+  it('applies a flat same-station transfer between consecutive rides', () => {
     const res = evaluatePlan(idx, plan({
       legs: [
         { id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'C' },
         { id: '2', type: 'ride', patternId: 'X-S-000', boardStationId: 'C', alightStationId: 'E' },
       ],
     }));
-    expect(res.legs[1].transferSec).toBe(120);
+    // a platform change is a flat 60s, not the (pessimistic, data-shipped) edge time
+    expect(res.legs[1].transferSec).toBe(SAME_STATION_TRANSFER_SEC);
+  });
+
+  it('skips the same-station transfer right after a walk leg', () => {
+    const res = evaluatePlan(idx, plan({
+      legs: [
+        { id: '1', type: 'walk', fromStationId: 'A', toStationId: 'C' },
+        { id: '2', type: 'ride', patternId: 'X-S-000', boardStationId: 'C', alightStationId: 'E' },
+      ],
+    }));
+    expect(res.legs[1].transferSec).toBe(0); // the walk already put you on the platform
   });
 
   it('errors but keeps timing when no transfer edge exists', () => {
@@ -224,11 +238,8 @@ describe('smart options', () => {
   });
 });
 
-describe('schedule mode (hybrid)', () => {
-  const sched = (partial: Partial<Plan>) => plan({
-    ...partial,
-    config: { passThroughCounts: false, walkPaceMultiplier: 0.8, scheduleMode: true },
-  });
+describe('timetable departures (the default)', () => {
+  const sched = (partial: Partial<Plan>) => plan(partial);
 
   it('snaps dense service to the next real departure', () => {
     // start 12:00; next L departure at A is 12:05 → 300s wait, pinned to the
@@ -237,6 +248,17 @@ describe('schedule mode (hybrid)', () => {
       legs: [{ id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'B' }],
     }));
     expect(res.legs[0].waitSec).toBe(300);
+    expect(res.legs[0].scheduledDepSec).toBe(725 * 60);
+  });
+
+  it('catches a train when arriving mid-minute (floors to the timetable minute)', () => {
+    // arrive 12:05:30 — the 12:05 L departure is floored to the minute, so a
+    // few seconds of slop must NOT miss it and eat a full headway
+    const res = evaluatePlan(idx, sched({
+      startClockSec: 725 * 60 + 30,
+      legs: [{ id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'B' }],
+    }));
+    expect(res.legs[0].waitSec).toBe(0); // boards the 12:05 train, not the 12:15
     expect(res.legs[0].scheduledDepSec).toBe(725 * 60);
   });
 
@@ -374,10 +396,9 @@ describe('real network', () => {
     }
   });
 
-  it('schedule mode snaps an overnight ride to a real departure', () => {
-    // 2:30am on the A: overnight headways are ~20 min, well above the
-    // cutoff. The overnight A runs local, a distinct stop-list pattern, so
-    // pick the candidate with the soonest real departure at 125 St.
+  it('snaps an overnight ride to a real departure', () => {
+    // 2:30am on the A: the overnight A runs local, a distinct stop-list
+    // pattern, so pick the candidate with the soonest real departure at 125 St.
     const s125 = real.stations.find((s) => s.name === '125 St' && s.routes.includes('A'))!;
     const s59 = real.stations.find((s) => s.name === '59 St-Columbus Circle')!;
     const candidates = real.patterns.filter((q) =>
@@ -393,7 +414,7 @@ describe('real network', () => {
     const res = evaluatePlan(ridx, {
       id: 'p', name: '', startStationId: s125.id, startClockSec: 2.5 * 3600,
       serviceDay: 'Weekday', contingencies: {},
-      config: { passThroughCounts: false, walkPaceMultiplier: 0.8, scheduleMode: true },
+      config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
       legs: [{ id: '1', type: 'ride', patternId: p.id, boardStationId: s125.id, alightStationId: s59.id }],
     });
     const leg = res.legs[0];
@@ -402,6 +423,29 @@ describe('real network', () => {
     expect(leg.scheduledDepSec!).toBeGreaterThanOrEqual(2.5 * 3600);
     expect(leg.waitSec).toBe(leg.scheduledDepSec! - 2.5 * 3600);
     expect(leg.waitSec).toBeLessThanOrEqual(40 * 60); // a train does come
+  });
+
+  it('rolls a 24h line past midnight into the next morning trains (not stranded)', () => {
+    // a plan whose clock has run continuously past midnight (24:33) rides the 1
+    // from Van Cortlandt to South Ferry. The same-day timetable is exhausted, but
+    // the 1 runs 24h — it must snap to the ~00:45 departure (matching the picker's
+    // rollover), not hard-error as stranded.
+    const vc = real.stations.find((s) => s.name === 'Van Cortlandt Park-242 St')!;
+    const sf = real.stations.find((s) => s.name === 'South Ferry')!;
+    const p = real.patterns.find((q) =>
+      q.routeId === '1' && q.stations[0] === vc.id && q.stations.includes(sf.id))!;
+    const t = 24.55 * 3600; // ~00:33 the next morning, continuous frame
+    const res = evaluatePlan(ridx, {
+      id: 'p', name: '', startStationId: vc.id, startClockSec: t,
+      serviceDay: 'Weekday', contingencies: {},
+      config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
+      legs: [{ id: '1', type: 'ride', patternId: p.id, boardStationId: vc.id, alightStationId: sf.id }],
+    });
+    const leg = res.legs[0];
+    expect(leg.errors).toEqual([]);
+    expect(leg.scheduledDepSec).not.toBeUndefined();
+    expect(leg.scheduledDepSec! - t).toBeGreaterThan(0);
+    expect(leg.waitSec).toBeLessThanOrEqual(2 * 3600); // minutes, not hours
   });
 
   it('evaluates a 60-leg plan in under 10ms', () => {

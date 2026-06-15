@@ -137,9 +137,6 @@ export interface PlanConfig {
   /** count Staten Island Railway stations toward coverage (target 493
    *  instead of the Guinness-official 472); default false */
   includeSIR?: boolean;
-  /** schedule mode: every train waits for its actual next stop_times
-   *  departure, and a missed last train is a hard error */
-  scheduleMode?: boolean;
 }
 
 export interface Plan {

@@ -9,6 +9,12 @@ const WALK_SPEED_MPS = 1.4; // base used to normalize edge times to meters
 const WALK_PATH_FACTOR = 1.3; // streets are not straight lines
 /** walk legs default to a 10 min/mi jog — we're speedrunning, not strolling */
 const DEFAULT_WALK_PACE_MIN_PER_MI = 10;
+/** the largest "wait for the next train" we treat as real overnight service;
+ *  past this the next departure is the next-morning trip → missed last train */
+const LAST_TRAIN_GAP_SEC = 2 * 3600;
+/** time to change platforms within a station for a train→train transfer; the
+ *  data ships a flat 180s per complex, but a cross-platform hop is ~a minute */
+export const SAME_STATION_TRANSFER_SEC = 60;
 
 export interface NetworkIndex {
   net: Network;
@@ -165,7 +171,11 @@ export function headwayAt(p: Pattern, day: ServiceDay, band: BandIndex):
 function searchDeps(deps: number[], targetSec: number): number | null {
   let lo = 0;
   let hi = deps.length;
-  const targetMin = targetSec / 60;
+  // departures are published (and stored) floored to the minute, so floor the
+  // arrival too: arriving any time within minute :43 still catches the :43
+  // train. Without this, a few seconds of accumulated slop makes the plan
+  // "miss" trains by 1-2s and eat a full headway, cascading down the whole run.
+  const targetMin = Math.floor(targetSec / 60);
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (deps[mid] < targetMin) lo = mid + 1;
@@ -229,6 +239,33 @@ export function nextDeparture(
   }
   if (best != null) return best;
   return sawData ? 'stranded' : null;
+}
+
+/** Soonest real departure of ANY same-route, same-direction pattern that serves
+ *  board -> alight in order, at or after t. The day splits a single route into
+ *  many GTFS patterns (rush express, late-night local, short-turns…); when the
+ *  rider's chosen pattern has run out for the night the route itself usually
+ *  still runs, so we look across its siblings before calling it stranded.
+ *  Returns the departure plus the pattern actually carrying it. */
+function siblingNextDeparture(
+  idx: NetworkIndex, p: Pattern, boardId: string, alightId: string, day: ServiceDay, t: number,
+): { dep: number; via: Pattern } | 'stranded' | null {
+  let best: { dep: number; via: Pattern } | null = null;
+  let sawData = false;
+  for (const { pattern: q, index: bi } of idx.patternsByStation.get(boardId) ?? []) {
+    if (q.routeId !== p.routeId || q.direction !== p.direction) continue;
+    if (q.stations.indexOf(alightId) <= bi) continue; // must continue to alight
+    // rollover=true: a 24-hour line whose clock has run past midnight rolls
+    // into the next service day's early trains (matching the leg picker), so a
+    // post-midnight ride snaps to the real 00:45 train instead of "stranded"
+    const d = nextDeparture(q, bi, day, t, true);
+    if (d === 'stranded') { sawData = true; continue; }
+    if (typeof d === 'number') {
+      sawData = true;
+      if (best === null || d < best.dep) best = { dep: d, via: q };
+    }
+  }
+  return best ?? (sawData ? 'stranded' : null);
 }
 
 function waitSeconds(policy: WaitPolicy | undefined, headway: number | null): number {
@@ -374,10 +411,14 @@ export function evaluatePlan(
             walkEstimateSec(idx, loc, leg.boardStationId) * plan.config.walkPaceMultiplier);
           r.errors.push(`no transfer edge ${name(idx, loc)} → ${name(idx, leg.boardStationId)} (using ${Math.round(r.transferSec / 60)} min walk estimate)`);
         }
-      } else if (loc !== null && results.length > 0) {
-        // same-station transfer between trains still takes time
+      } else if (loc !== null && results.length > 0
+        && plan.legs[results.length - 1]?.type !== 'walk') {
+        // same-station transfer between trains still takes time — but a walk leg
+        // already repositioned you onto this platform, so don't double-count it.
+        // The data ships a flat 180s for every complex; a cross-platform hop is
+        // really ~a minute, so use that instead.
         const self = transferBetween(idx, loc, loc);
-        if (self) r.transferSec = self.sec;
+        if (self) r.transferSec = SAME_STATION_TRANSFER_SEC;
       }
       t += r.transferSec;
 
@@ -389,21 +430,37 @@ export function evaluatePlan(
       // exact departure, missing it costs a headway (overnight legs keep
       // their risk flag regardless of mode)
       r.riskSec = svc.headwaySec;
-      // schedule mode pins every train to its actual next stop_times departure —
-      // no statistical ½-headway shortcut, so the arrival/departure clock matches
-      // the real timetable. An explicit per-leg numeric wait still wins (it's a
-      // deliberate note), and a pattern with no departure data falls through to
-      // the headway estimate below.
-      const useSchedule = plan.config.scheduleMode && typeof leg.wait !== 'number';
+      // by default every train waits for its actual next stop_times departure,
+      // so the arrival/departure clock matches the real timetable (and matches
+      // the next-train estimate shown while adding the leg). A per-leg wait
+      // override — a policy ('zero'/'half'/'full') or an explicit number — opts
+      // out for that leg; a pattern with no departure data falls through to the
+      // headway estimate below.
+      const useSchedule = leg.wait === undefined;
       let resolved = false;
       if (useSchedule) {
         const dep = nextDeparture(p, bi, plan.serviceDay, t);
         if (dep === 'stranded') {
-          r.errors.push(`stranded — last train missed: no ${p.routeId} departure left at ${name(idx, leg.boardStationId)} after ${fmtClock(t)} (${day})`);
-          r.waitSec = svc.headwaySec ?? 1800; // keep the clock moving
+          // this pattern is done for the night — does the route still run via a
+          // late-night / short-turn sibling? ride that instead of stranding
+          const alt = siblingNextDeparture(idx, p, leg.boardStationId, leg.alightStationId, plan.serviceDay, t);
+          // accept the next real train only if it's within the overnight gap —
+          // a 24h line's next departure is minutes away, while a line that has
+          // genuinely stopped only "rolls over" to its next-morning trip hours
+          // later, which is a true missed-last-train (stranded), not a wait
+          if (alt && alt !== 'stranded' && alt.dep - t <= LAST_TRAIN_GAP_SEC) {
+            r.waitSec = Math.max(0, alt.dep - t); // floored search can land just behind t
+            r.scheduledDepSec = alt.dep;
+            if (alt.via.id !== p.id) {
+              r.warnings.push(`${p.label} has no departure left — next ${p.routeId} from ${name(idx, leg.boardStationId)} is the ${fmtClock(alt.dep)} ${alt.via.label}`);
+            }
+          } else {
+            r.errors.push(`stranded — last train missed: no ${p.routeId} departure left at ${name(idx, leg.boardStationId)} after ${fmtClock(t)} (${day})`);
+            r.waitSec = svc.headwaySec ?? 1800; // keep the clock moving
+          }
           resolved = true;
         } else if (dep !== null) {
-          r.waitSec = dep - t;
+          r.waitSec = Math.max(0, dep - t); // floored search can land just behind t
           r.scheduledDepSec = dep;
           if (!svc.runs) {
             r.warnings.push(`${p.label}: no ${BAND_NAMES[band]} service on ${day} — holding for the ${fmtClock(dep)} departure`);

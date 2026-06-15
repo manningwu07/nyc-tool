@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
-import { busBetween, headwayAt, nextDeparture, transferBetween, walkEstimateSec, walkSecAtPace } from '../engine/engine';
+import { busBetween, headwayAt, nextDeparture, SAME_STATION_TRANSFER_SEC, transferBetween, walkEstimateSec, walkSecAtPace } from '../engine/engine';
 import type { Pattern, Plan, PlanResult, ServiceDay } from '../engine/types';
 import { bandOf, fmtClock, fmtDur, serviceDayAt } from '../engine/time';
 import { addLeg, addCustomTransfer, setState, uid, updateActivePlan, useAppState } from '../store';
@@ -19,6 +19,12 @@ export default function LegEntry({ idx, plan, result }: Props) {
   const lastLeg = result?.legs[result.legs.length - 1];
   const here = lastLeg?.endStationId ?? plan.startStationId ?? null;
   const t = result?.endSec ?? plan.startClockSec;
+  // boarding a train here means a same-station platform change — unless the
+  // last leg was a walk (which already put you on the platform) or this is the
+  // start. Mirror the engine so the picker's departures match the plan.
+  const lastLegType = plan.legs[plan.legs.length - 1]?.type;
+  const transferSec = here && lastLegType && lastLegType !== 'walk' && transferBetween(idx, here, here)
+    ? SAME_STATION_TRANSFER_SEC : 0;
 
   if (!plan.startStationId) {
     return (
@@ -52,7 +58,7 @@ export default function LegEntry({ idx, plan, result }: Props) {
         <SelectedStation idx={idx} here={here} selected={selected} />
       )}
 
-      {here && <RideOptions key={`${here}-${t}`} idx={idx} plan={plan} here={here} t={t} />}
+      {here && <RideOptions key={`${here}-${t}`} idx={idx} plan={plan} here={here} t={t} transferSec={transferSec} />}
 
       <div className="section">
         <h3>Other</h3>
@@ -111,11 +117,15 @@ function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: str
  *  rather than mixed in with the ones you can actually catch */
 const RIDE_SOON_HORIZON_SEC = 60 * 60;
 
-function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; here: string; t: number }) {
+function RideOptions({ idx, plan, here, t, transferSec }:
+  { idx: NetworkIndex; plan: Plan; here: string; t: number; transferSec: number }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showLater, setShowLater] = useState(false);
-  const day = serviceDayAt(plan.serviceDay, t);
-  const band = bandOf(t);
+  // you can't board until you've walked to the platform — search departures
+  // from the post-transfer clock so these times match the committed plan
+  const boardT = t + transferSec;
+  const day = serviceDayAt(plan.serviceDay, boardT);
+  const band = bandOf(boardT);
 
   // every pattern that stops here and continues onward — rank by the REAL next
   // departure, not the coarse band "runs" flag. A line that only serves this
@@ -126,11 +136,11 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
     .filter(({ pattern, index }) => index < pattern.stations.length - 1)
     .map(({ pattern, index }) => {
       const { runs, headwaySec } = headwayAt(pattern, day, band);
-      const dep = nextDeparture(pattern, index, plan.serviceDay, t, true);
+      const dep = nextDeparture(pattern, index, plan.serviceDay, boardT, true);
       const sortKey = typeof dep === 'number'
         ? dep
         : dep === 'stranded' ? Infinity
-          : runs ? t + (headwaySec ?? 1800) / 2 : Infinity;
+          : runs ? boardT + (headwaySec ?? 1800) / 2 : Infinity;
       return { pattern, index, headwaySec, sortKey };
     })
     .sort((a, b) => a.sortKey - b.sortKey);
@@ -145,8 +155,8 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
     return true;
   });
 
-  const soon = deduped.filter((r) => r.sortKey - t <= RIDE_SOON_HORIZON_SEC);
-  const later = deduped.filter((r) => r.sortKey - t > RIDE_SOON_HORIZON_SEC);
+  const soon = deduped.filter((r) => r.sortKey - boardT <= RIDE_SOON_HORIZON_SEC);
+  const later = deduped.filter((r) => r.sortKey - boardT > RIDE_SOON_HORIZON_SEC);
 
   const rideRow = ({ pattern, index, headwaySec }: typeof deduped[number]) => (
     <div key={pattern.id}>
@@ -156,7 +166,7 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
           {pattern.direction === 'N' ? '↑' : '↓'} to {stationName(idx, pattern.stations[pattern.stations.length - 1])}
           <span className="muted"> · {pattern.stations.length - 1 - index} stops left</span>
         </span>
-        <Departures pattern={pattern} index={index} day={plan.serviceDay} t={t} headwaySec={headwaySec} />
+        <Departures pattern={pattern} index={index} day={plan.serviceDay} t={boardT} headwaySec={headwaySec} />
       </div>
       {expanded === pattern.id && (
         <AlightPicker idx={idx} pattern={pattern} boardIndex={index} onPick={(alight) => {
@@ -172,7 +182,14 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
 
   return (
     <div className="section options">
-      <h3>Trains from here ({fmtClock(t)})</h3>
+      <h3>
+        Trains from here ({fmtClock(t)})
+        {transferSec > 0 && (
+          <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>
+            {' '}· +{fmtDur(transferSec)} platform transfer → board from {fmtClock(boardT)}
+          </span>
+        )}
+      </h3>
       {deduped.length === 0 && <div className="muted">No line serves this station.</div>}
       {soon.length === 0 && deduped.length > 0 && (
         <div className="muted">Nothing leaves within the hour — see other lines below.</div>

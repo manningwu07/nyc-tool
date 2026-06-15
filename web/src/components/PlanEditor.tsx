@@ -58,15 +58,9 @@ export default function PlanEditor({ idx, plan, result }: Props) {
               }))}
             /> include SIR (493)
           </label>
-          <label className="muted" title="schedule mode: every train waits for its actual next GTFS departure, and missing the last train is a hard error">
-            <input
-              type="checkbox"
-              checked={plan.config.scheduleMode ?? false}
-              onChange={(e) => updateActivePlan((p) => ({
-                ...p, config: { ...p.config, scheduleMode: e.target.checked },
-              }))}
-            /> schedule mode
-          </label>
+          <span className="muted" title="every ride waits for its actual next GTFS departure; set a per-leg wait override to opt out">
+            ⏱ real timetable
+          </span>
         </div>
       </div>
 
@@ -101,18 +95,21 @@ export default function PlanEditor({ idx, plan, result }: Props) {
                   <label className="muted">
                     wait{' '}
                     <select
-                      value={typeof leg.wait === 'number' ? 'manual' : (leg.wait ?? 'zero')}
+                      value={typeof leg.wait === 'number' ? 'manual' : (leg.wait ?? 'auto')}
                       onChange={(e) => {
                         const v = e.target.value;
                         if (v === 'manual') {
                           const min = prompt('wait minutes:', '5');
                           if (min != null) updateLeg(leg.id, { wait: Math.round(Number(min) * 60) as WaitPolicy });
+                        } else if (v === 'auto') {
+                          updateLeg(leg.id, { wait: undefined });
                         } else {
                           updateLeg(leg.id, { wait: v as WaitPolicy });
                         }
                       }}
                     >
-                      <option value="zero">timed (0) — default</option>
+                      <option value="auto">next train (timetable) — default</option>
+                      <option value="zero">timed (0)</option>
                       <option value="half">½ headway</option>
                       <option value="full">full headway</option>
                       <option value="manual">manual…</option>
