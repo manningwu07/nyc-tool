@@ -58,7 +58,7 @@ export default function PlanEditor({ idx, plan, result }: Props) {
               }))}
             /> include SIR (493)
           </label>
-          <label className="muted" title="hybrid schedule mode: frequent service keeps ½-headway waits; sparse service snaps to actual GTFS departures, and missing the last train is a hard error">
+          <label className="muted" title="schedule mode: every train waits for its actual next GTFS departure, and missing the last train is a hard error">
             <input
               type="checkbox"
               checked={plan.config.scheduleMode ?? false}
@@ -67,23 +67,6 @@ export default function PlanEditor({ idx, plan, result }: Props) {
               }))}
             /> schedule mode
           </label>
-          {plan.config.scheduleMode && (
-            <label className="muted" title="headways at or under this stay statistical (½ headway); above it the wait uses the real timetable">
-              cutoff (min){' '}
-              <input
-                style={{ width: 50 }}
-                type="number" step="1" min="0" max="60"
-                value={Math.round((plan.config.scheduleHeadwayCutoffSec ?? 720) / 60)}
-                onChange={(e) => updateActivePlan((p) => ({
-                  ...p,
-                  config: {
-                    ...p.config,
-                    scheduleHeadwayCutoffSec: Math.max(0, Number(e.target.value) || 12) * 60,
-                  },
-                }))}
-              />
-            </label>
-          )}
         </div>
       </div>
 

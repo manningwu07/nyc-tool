@@ -137,12 +137,9 @@ export interface PlanConfig {
   /** count Staten Island Railway stations toward coverage (target 493
    *  instead of the Guinness-official 472); default false */
   includeSIR?: boolean;
-  /** hybrid schedule mode: dense service (headway ≤ cutoff) keeps the
-   *  statistical ½-headway wait; sparse service snaps to the next actual
-   *  stop_times departure, and a missed last train is a hard error */
+  /** schedule mode: every train waits for its actual next stop_times
+   *  departure, and a missed last train is a hard error */
   scheduleMode?: boolean;
-  /** headway above which schedule mode uses real departures; default 720 */
-  scheduleHeadwayCutoffSec?: number;
 }
 
 export interface Plan {

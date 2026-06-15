@@ -10,9 +10,6 @@ const WALK_PATH_FACTOR = 1.3; // streets are not straight lines
 /** walk legs default to a 10 min/mi jog — we're speedrunning, not strolling */
 const DEFAULT_WALK_PACE_MIN_PER_MI = 10;
 
-/** schedule mode: headway above which the wait snaps to real departures */
-export const DEFAULT_SCHEDULE_CUTOFF_SEC = 720;
-
 export interface NetworkIndex {
   net: Network;
   stationById: Map<string, Station>;
@@ -185,7 +182,7 @@ function searchDeps(deps: number[], targetSec: number): number | null {
  * when the network has no departure data for this pattern (old network.json).
  */
 export function nextDeparture(
-  p: Pattern, stopIndex: number, startDay: ServiceDay, t: number,
+  p: Pattern, stopIndex: number, startDay: ServiceDay, t: number, rollover = false,
 ): number | 'stranded' | null {
   if (!p.departures) return null;
   // express t in the GTFS frame of the service day in effect (6am boundary,
@@ -212,6 +209,22 @@ export function nextDeparture(
       sawData = true;
       const d = searchDeps(pdeps, localT + DAY);
       if (d != null && (best === null || d - DAY < best)) best = d - DAY;
+    }
+  }
+  // overnight rollover (informational only): the current service day's last
+  // trip has gone, but the subway runs continuously past midnight — the NEXT
+  // service day's early-morning trips are already moving. Roll one day forward
+  // and return that departure in the continuing clock frame instead of falsely
+  // claiming "no more trains today". Off by default so plan evaluation still
+  // surfaces a genuine missed-last-train as 'stranded'.
+  if (best === null && rollover) {
+    const nextOff = offset + 1;
+    const nday = serviceDayAt(startDay, t + DAY);
+    const ndeps = p.departures[nday]?.[stopIndex];
+    if (ndeps?.length) {
+      sawData = true;
+      const d = searchDeps(ndeps, t - nextOff * DAY);
+      if (d != null) best = d + nextOff * DAY;
     }
   }
   if (best != null) return best;
@@ -376,12 +389,12 @@ export function evaluatePlan(
       // exact departure, missing it costs a headway (overnight legs keep
       // their risk flag regardless of mode)
       r.riskSec = svc.headwaySec;
-      const cutoff = plan.config.scheduleHeadwayCutoffSec ?? DEFAULT_SCHEDULE_CUTOFF_SEC;
-      // hybrid schedule mode: dense service stays statistical (½ headway);
-      // sparse or not-running snaps to the next real stop_times departure.
-      // An explicit per-leg numeric wait still wins — it's a deliberate note.
-      const useSchedule = plan.config.scheduleMode && typeof leg.wait !== 'number'
-        && (!svc.runs || svc.headwaySec == null || svc.headwaySec > cutoff);
+      // schedule mode pins every train to its actual next stop_times departure —
+      // no statistical ½-headway shortcut, so the arrival/departure clock matches
+      // the real timetable. An explicit per-leg numeric wait still wins (it's a
+      // deliberate note), and a pattern with no departure data falls through to
+      // the headway estimate below.
+      const useSchedule = plan.config.scheduleMode && typeof leg.wait !== 'number';
       let resolved = false;
       if (useSchedule) {
         const dep = nextDeparture(p, bi, plan.serviceDay, t);
@@ -403,9 +416,7 @@ export function evaluatePlan(
         if (!svc.runs) {
           r.errors.push(`${p.label} does not run in the ${BAND_NAMES[band]} band on ${day} (at ${fmtClock(t)})`);
         }
-        r.waitSec = plan.config.scheduleMode && typeof leg.wait !== 'number'
-          ? Math.round((svc.headwaySec ?? 1800) / 2)
-          : waitSeconds(leg.wait, svc.headwaySec);
+        r.waitSec = waitSeconds(leg.wait, svc.headwaySec);
       }
       t += r.waitSec;
       r.departSec = t;

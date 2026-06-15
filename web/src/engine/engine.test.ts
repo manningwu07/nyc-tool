@@ -31,6 +31,17 @@ const fixture: Network = {
         { Weekday: [80, 80, 80, 80, 80] },
         { Weekday: [90, 90, 90, 90, 90] },
       ],
+      // dense 10-min service with a real timetable; next A departure after
+      // 12:00 is 12:05 (departures stored in minutes, per stop)
+      departures: {
+        Weekday: [
+          [725, 735, 745],
+          [727, 737, 747],
+          [731, 741, 751],
+          [733, 743, 753],
+          [735, 745, 755],
+        ],
+      },
       service: { Weekday: FULL }, tripCount: 100, shapeId: null,
     },
     {
@@ -219,12 +230,14 @@ describe('schedule mode (hybrid)', () => {
     config: { passThroughCounts: false, walkPaceMultiplier: 0.8, scheduleMode: true },
   });
 
-  it('keeps ½-headway waits for dense service', () => {
+  it('snaps dense service to the next real departure', () => {
+    // start 12:00; next L departure at A is 12:05 → 300s wait, pinned to the
+    // timetable (no statistical ½-headway shortcut)
     const res = evaluatePlan(idx, sched({
       legs: [{ id: '1', type: 'ride', patternId: 'L-S-000', boardStationId: 'A', alightStationId: 'B' }],
     }));
-    expect(res.legs[0].waitSec).toBe(300); // L headway 600 ≤ 720 cutoff
-    expect(res.legs[0].scheduledDepSec).toBeUndefined();
+    expect(res.legs[0].waitSec).toBe(300);
+    expect(res.legs[0].scheduledDepSec).toBe(725 * 60);
   });
 
   it('snaps sparse service to the next real departure', () => {
@@ -260,21 +273,6 @@ describe('schedule mode (hybrid)', () => {
     expect(res.errorCount).toBeGreaterThan(0);
   });
 
-  it('respects a configurable cutoff', () => {
-    // raising the cutoff to 2h makes the hourly R count as "dense", so it
-    // stays statistical instead of snapping to the timetable
-    const res = evaluatePlan(idx, plan({
-      config: {
-        passThroughCounts: false, walkPaceMultiplier: 0.8,
-        scheduleMode: true, scheduleHeadwayCutoffSec: 7200,
-      },
-      startClockSec: 12.5 * 3600,
-      legs: [{ id: '1', type: 'ride', patternId: 'R-S-000', boardStationId: 'A', alightStationId: 'B' }],
-    }));
-    expect(res.legs[0].scheduledDepSec).toBeUndefined(); // 3600 ≤ 7200 → statistical
-    expect(res.legs[0].waitSec).toBe(1800);
-  });
-
   it('explicit numeric leg wait beats the schedule', () => {
     const res = evaluatePlan(idx, sched({
       startClockSec: 12.5 * 3600,
@@ -284,15 +282,15 @@ describe('schedule mode (hybrid)', () => {
     expect(res.legs[0].scheduledDepSec).toBeUndefined();
   });
 
-  it('falls back to ½ headway when the network has no departure data', () => {
+  it('falls back to the wait policy when the network has no departure data', () => {
     const res = evaluatePlan(idx, sched({
       startClockSec: 2 * 3600,
       legs: [{ id: '1', type: 'ride', patternId: 'X-S-000', boardStationId: 'A', alightStationId: 'E' }],
     }));
-    // X has no departures array: keeps the does-not-run error, ½ of the
-    // 1800 fallback headway
+    // X has no departures array: keeps the does-not-run error and falls back to
+    // the leg's wait policy (default timed → board on arrival)
     expect(res.legs[0].errors[0]).toMatch(/does not run/);
-    expect(res.legs[0].waitSec).toBe(900);
+    expect(res.legs[0].waitSec).toBe(0);
   });
 
   it('nextDeparture checks the previous service day before 6am', () => {

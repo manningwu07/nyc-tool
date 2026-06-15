@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
-import { busBetween, nextDeparture, optionsFrom, transferBetween, walkEstimateSec, walkSecAtPace } from '../engine/engine';
+import { busBetween, headwayAt, nextDeparture, transferBetween, walkEstimateSec, walkSecAtPace } from '../engine/engine';
 import type { Pattern, Plan, PlanResult, ServiceDay } from '../engine/types';
-import { fmtClock, fmtDur } from '../engine/time';
+import { bandOf, fmtClock, fmtDur, serviceDayAt } from '../engine/time';
 import { addLeg, addCustomTransfer, setState, uid, updateActivePlan, useAppState } from '../store';
 import { RouteBadge, stationName } from './LegRow';
 
@@ -107,22 +107,36 @@ function SelectedStation({ idx, here, selected }: { idx: NetworkIndex; here: str
   );
 }
 
+/** trains departing more than this far out are bucketed as "not running now"
+ *  rather than mixed in with the ones you can actually catch */
+const RIDE_SOON_HORIZON_SEC = 60 * 60;
+
 function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; here: string; t: number }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const { rides } = optionsFrom(idx, here, plan.serviceDay, t);
-  // rank by the real next departure where the timetable has one (short-turn
-  // variants share a headway band but leave at different times), falling
-  // back to ½ headway; then collapse near-duplicate options, keeping the
-  // soonest pattern per (route, direction, next stop, terminal)
-  const ranked = rides
-    .map((r) => {
-      const dep = nextDeparture(r.pattern, r.index, plan.serviceDay, t);
+  const [showLater, setShowLater] = useState(false);
+  const day = serviceDayAt(plan.serviceDay, t);
+  const band = bandOf(t);
+
+  // every pattern that stops here and continues onward — rank by the REAL next
+  // departure, not the coarse band "runs" flag. A line that only serves this
+  // stop later in the day (e.g. the 4 runs local through the Lexington locals
+  // ONLY overnight; midday it's express and skips them) still gets listed
+  // instead of silently vanishing.
+  const ranked = (idx.patternsByStation.get(here) ?? [])
+    .filter(({ pattern, index }) => index < pattern.stations.length - 1)
+    .map(({ pattern, index }) => {
+      const { runs, headwaySec } = headwayAt(pattern, day, band);
+      const dep = nextDeparture(pattern, index, plan.serviceDay, t, true);
       const sortKey = typeof dep === 'number'
         ? dep
-        : dep === 'stranded' ? Infinity : t + (r.headwaySec ?? 1800) / 2;
-      return { ...r, sortKey };
+        : dep === 'stranded' ? Infinity
+          : runs ? t + (headwaySec ?? 1800) / 2 : Infinity;
+      return { pattern, index, headwaySec, sortKey };
     })
     .sort((a, b) => a.sortKey - b.sortKey);
+
+  // collapse near-duplicate options, keeping the soonest pattern per
+  // (route, direction, next stop, terminal)
   const seen = new Set<string>();
   const deduped = ranked.filter(({ pattern, index }) => {
     const k = `${pattern.routeId}|${pattern.direction}|${pattern.stations[index + 1]}|${pattern.stations[pattern.stations.length - 1]}`;
@@ -131,31 +145,51 @@ function RideOptions({ idx, plan, here, t }: { idx: NetworkIndex; plan: Plan; he
     return true;
   });
 
+  const soon = deduped.filter((r) => r.sortKey - t <= RIDE_SOON_HORIZON_SEC);
+  const later = deduped.filter((r) => r.sortKey - t > RIDE_SOON_HORIZON_SEC);
+
+  const rideRow = ({ pattern, index, headwaySec }: typeof deduped[number]) => (
+    <div key={pattern.id}>
+      <div className="opt" onClick={() => setExpanded(expanded === pattern.id ? null : pattern.id)}>
+        <RouteBadge idx={idx} routeId={pattern.routeId} />
+        <span style={{ flex: 1 }}>
+          {pattern.direction === 'N' ? '↑' : '↓'} to {stationName(idx, pattern.stations[pattern.stations.length - 1])}
+          <span className="muted"> · {pattern.stations.length - 1 - index} stops left</span>
+        </span>
+        <Departures pattern={pattern} index={index} day={plan.serviceDay} t={t} headwaySec={headwaySec} />
+      </div>
+      {expanded === pattern.id && (
+        <AlightPicker idx={idx} pattern={pattern} boardIndex={index} onPick={(alight) => {
+          addLeg({
+            id: uid(), type: 'ride', patternId: pattern.id,
+            boardStationId: here, alightStationId: alight,
+          });
+          setExpanded(null);
+        }} />
+      )}
+    </div>
+  );
+
   return (
     <div className="section options">
       <h3>Trains from here ({fmtClock(t)})</h3>
-      {deduped.length === 0 && <div className="muted">Nothing runs from here at this time.</div>}
-      {deduped.map(({ pattern, index, headwaySec }) => (
-        <div key={pattern.id}>
-          <div className="opt" onClick={() => setExpanded(expanded === pattern.id ? null : pattern.id)}>
-            <RouteBadge idx={idx} routeId={pattern.routeId} />
-            <span style={{ flex: 1 }}>
-              {pattern.direction === 'N' ? '↑' : '↓'} to {stationName(idx, pattern.stations[pattern.stations.length - 1])}
-              <span className="muted"> · {pattern.stations.length - 1 - index} stops left</span>
-            </span>
-            <Departures pattern={pattern} index={index} day={plan.serviceDay} t={t} headwaySec={headwaySec} />
-          </div>
-          {expanded === pattern.id && (
-            <AlightPicker idx={idx} pattern={pattern} boardIndex={index} onPick={(alight) => {
-              addLeg({
-                id: uid(), type: 'ride', patternId: pattern.id,
-                boardStationId: here, alightStationId: alight,
-              });
-              setExpanded(null);
-            }} />
-          )}
-        </div>
-      ))}
+      {deduped.length === 0 && <div className="muted">No line serves this station.</div>}
+      {soon.length === 0 && deduped.length > 0 && (
+        <div className="muted">Nothing leaves within the hour — see other lines below.</div>
+      )}
+      {soon.map(rideRow)}
+      {later.length > 0 && (
+        <>
+          <button
+            className="muted"
+            style={{ marginTop: 6, background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', textAlign: 'left' }}
+            onClick={() => setShowLater((v) => !v)}
+          >
+            {showLater ? '▾' : '▸'} {later.length} more line{later.length === 1 ? '' : 's'} not running now
+          </button>
+          {(showLater || soon.length === 0) && later.map(rideRow)}
+        </>
+      )}
     </div>
   );
 }
@@ -165,7 +199,7 @@ function upcomingDepartures(p: Pattern, index: number, day: ServiceDay, t: numbe
   const out: number[] = [];
   let cur = t;
   for (let k = 0; k < n; k++) {
-    const d = nextDeparture(p, index, day, cur);
+    const d = nextDeparture(p, index, day, cur, true);
     if (typeof d !== 'number') break;
     out.push(d);
     cur = d + 60; // departures are floored to the minute
@@ -191,7 +225,7 @@ function Departures({ pattern, index, day, t, headwaySec }: {
       </span>
     );
   }
-  if (nextDeparture(pattern, index, day, t) === 'stranded') {
+  if (nextDeparture(pattern, index, day, t, true) === 'stranded') {
     return (
       <span className="muted" style={style}>
         <b style={{ color: 'var(--red, #f87171)' }}>no more trains today</b><br />
