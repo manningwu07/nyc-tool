@@ -64,4 +64,17 @@ describe('store cross-tab persistence', () => {
 
     expect(store.activePlan(store.getState())?.legs).toEqual([leg]);
   });
+
+  it('migrates imported aggregate weekday plans to Monday', async () => {
+    const store = await import('./store');
+    const oldPlan = {
+      id: 'old', name: 'old', startStationId: '', startClockSec: 0,
+      serviceDay: 'Weekday', legs: [], contingencies: {},
+      config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
+    };
+
+    store.importPlan(JSON.stringify(oldPlan));
+
+    expect(store.activePlan(store.getState())?.serviceDay).toBe('Monday');
+  });
 });

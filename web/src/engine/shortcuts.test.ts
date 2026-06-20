@@ -59,7 +59,7 @@ const idx = buildIndex(fixture);
 function plan(partial: Partial<Plan>): Plan {
   return {
     id: 'p', name: 'test', startStationId: 'C', startClockSec: 12 * 3600,
-    serviceDay: 'Weekday', legs: [], contingencies: {},
+    serviceDay: 'Monday', legs: [], contingencies: {},
     config: { passThroughCounts: false, walkPaceMultiplier: 1 },
     ...partial,
   };

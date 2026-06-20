@@ -1,7 +1,7 @@
 // App state: plans, segments, custom walk edges, live-run state.
 // Persisted to localStorage on every change (also our offline store).
 import { useSyncExternalStore } from 'react';
-import type { ContingencyBranch, Leg, Plan, PlanResult, ServiceDay, TransferEdge } from './engine/types';
+import type { CalendarDay, ContingencyBranch, Leg, Plan, PlanResult, TransferEdge } from './engine/types';
 import type { Attempt } from './attempts';
 import { planSignature, pruneAttempts } from './attempts';
 
@@ -55,17 +55,26 @@ function freshPlan(name = 'Plan 1'): Plan {
     name,
     startStationId: '',
     startClockSec: 6 * 3600,
-    serviceDay: 'Weekday',
+    serviceDay: 'Monday',
     legs: [],
     contingencies: {},
     config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
   };
 }
 
+function normalizePlan(p: Plan): Plan {
+  if ((p.serviceDay as string) === 'Weekday') p.serviceDay = 'Monday';
+  return p;
+}
+
 function normalizeLoadedState(s: AppState): AppState {
   s.selectedStationId = null;
+  s.plans.forEach(normalizePlan);
   s.attempts ??= [];
-  s.attempts.forEach((a) => { a.signature ??= planSignature(a.plan); });
+  s.attempts.forEach((a) => {
+    normalizePlan(a.plan);
+    a.signature ??= planSignature(a.plan);
+  });
   return s;
 }
 
@@ -235,7 +244,7 @@ export function deletePlan(planId: string) {
 }
 
 export function importPlan(json: string) {
-  const p = JSON.parse(json) as Plan;
+  const p = normalizePlan(JSON.parse(json) as Plan);
   p.id = uid();
   p.contingencies ??= {};
   setState((s) => ({ plans: [...s.plans, p], activePlanId: p.id }));
@@ -340,7 +349,7 @@ export function clockSecNow(run: RunState): number {
   return Math.round((Date.now() - run.dayStartMs) / 1000);
 }
 
-export function startRun(planId: string, serviceDay: ServiceDay) {
+export function startRun(planId: string, serviceDay: CalendarDay) {
   void serviceDay;
   const now = new Date();
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();

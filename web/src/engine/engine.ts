@@ -1,9 +1,9 @@
 import type {
-  BandIndex, LegResult, Network, Pattern, Plan, PlanResult, ServiceDay,
+  BandIndex, LegResult, Network, Pattern, Plan, PlanResult, ServiceDay, StartDay,
   Station, TransferEdge, WaitPolicy,
 } from './types';
 import { BAND_NAMES } from './types';
-import { bandOf, haversineMeters, serviceDayAt, fmtClock, DAY } from './time';
+import { bandOf, calendarDayAt, haversineMeters, serviceDayAt, fmtClock, DAY } from './time';
 
 const WALK_SPEED_MPS = 1.4; // base used to normalize edge times to meters
 const WALK_PATH_FACTOR = 1.3; // streets are not straight lines
@@ -192,12 +192,10 @@ function searchDeps(deps: number[], targetSec: number): number | null {
  * when the network has no departure data for this pattern (old network.json).
  */
 export function nextDeparture(
-  p: Pattern, stopIndex: number, startDay: ServiceDay, t: number, rollover = false,
+  p: Pattern, stopIndex: number, startDay: StartDay, t: number, rollover = false,
 ): number | 'stranded' | null {
   if (!p.departures) return null;
-  // express t in the GTFS frame of the service day in effect (6am boundary,
-  // mirroring serviceDayAt): localT may run past 86400 for 24:xx+ trips
-  const offset = Math.max(0, Math.floor((t - 6 * 3600) / DAY));
+  const offset = Math.floor(t / DAY);
   const day = serviceDayAt(startDay, t);
   const localT = t - offset * DAY;
   let sawData = false;
@@ -208,17 +206,18 @@ export function nextDeparture(
     const d = searchDeps(deps, localT);
     if (d != null) best = d + offset * DAY;
   }
-  // before 6am the previous service day's 24:xx+ trips are still running;
-  // Sun->Sat is exact, the Weekday cases approximate (same limitation as
-  // serviceDayAt — the planner picks the start day to match the date)
-  if (localT < 6 * 3600 && offset === 0) {
-    const prev: Record<ServiceDay, ServiceDay> =
-      { Weekday: 'Weekday', Saturday: 'Weekday', Sunday: 'Saturday' };
-    const pdeps = p.departures[prev[startDay]]?.[stopIndex];
+  // GTFS 24:xx+ trips belong to the previous calendar day's service. Search
+  // them alongside the new day's 00:xx trips and take the actual next train.
+  if (localT < 6 * 3600) {
+    const previousDay = calendarDayAt(startDay, t - DAY);
+    const previousService: ServiceDay = previousDay === 'Saturday' || previousDay === 'Sunday'
+      ? previousDay : 'Weekday';
+    const pdeps = p.departures[previousService]?.[stopIndex];
     if (pdeps?.length) {
       sawData = true;
       const d = searchDeps(pdeps, localT + DAY);
-      if (d != null && (best === null || d - DAY < best)) best = d - DAY;
+      const global = d == null ? null : d + (offset - 1) * DAY;
+      if (global != null && (best === null || global < best)) best = global;
     }
   }
   // overnight rollover (informational only): the current service day's last
@@ -248,7 +247,7 @@ export function nextDeparture(
  *  still runs, so we look across its siblings before calling it stranded.
  *  Returns the departure plus the pattern actually carrying it. */
 function siblingNextDeparture(
-  idx: NetworkIndex, p: Pattern, boardId: string, alightId: string, day: ServiceDay, t: number,
+  idx: NetworkIndex, p: Pattern, boardId: string, alightId: string, day: StartDay, t: number,
 ): { dep: number; via: Pattern } | 'stranded' | null {
   let best: { dep: number; via: Pattern } | null = null;
   let sawData = false;
@@ -527,7 +526,7 @@ function name(idx: NetworkIndex, sid: string): string {
 
 /** valid next options from a station at clock t — drives "smart leg entry" */
 export function optionsFrom(
-  idx: NetworkIndex, stationId: string, startDay: ServiceDay, t: number,
+  idx: NetworkIndex, stationId: string, startDay: StartDay, t: number,
 ): { rides: { pattern: Pattern; index: number; headwaySec: number | null }[]; walks: TransferEdge[] } {
   const day = serviceDayAt(startDay, t);
   const band = bandOf(t);

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
 import { busBetween, headwayAt, nextDeparture, SAME_STATION_TRANSFER_SEC, transferBetween, walkEstimateSec, walkSecAtPace } from '../engine/engine';
-import type { Pattern, Plan, PlanResult, ServiceDay } from '../engine/types';
+import type { CalendarDay, Pattern, Plan, PlanResult } from '../engine/types';
 import { bandOf, fmtClock, fmtDur, serviceDayAt } from '../engine/time';
 import { addLeg, addCustomTransfer, setState, uid, updateActivePlan, useAppState } from '../store';
 import { RouteBadge, stationName } from './LegRow';
@@ -212,7 +212,7 @@ function RideOptions({ idx, plan, here, t, transferSec }:
 }
 
 /** the next n scheduled departures of a pattern at a stop (clock sec) */
-function upcomingDepartures(p: Pattern, index: number, day: ServiceDay, t: number, n: number): number[] {
+function upcomingDepartures(p: Pattern, index: number, day: CalendarDay, t: number, n: number): number[] {
   const out: number[] = [];
   let cur = t;
   for (let k = 0; k < n; k++) {
@@ -227,7 +227,7 @@ function upcomingDepartures(p: Pattern, index: number, day: ServiceDay, t: numbe
 /** real-timetable departures column; ½-headway estimate only when the
  *  network has no stop_times data for this pattern */
 function Departures({ pattern, index, day, t, headwaySec }: {
-  pattern: Pattern; index: number; day: ServiceDay; t: number; headwaySec: number | null;
+  pattern: Pattern; index: number; day: CalendarDay; t: number; headwaySec: number | null;
 }) {
   const deps = upcomingDepartures(pattern, index, day, t, 8);
   const style = { textAlign: 'right' as const, lineHeight: 1.25 };

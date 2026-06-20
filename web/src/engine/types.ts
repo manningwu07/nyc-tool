@@ -2,6 +2,12 @@
 
 export type ServiceDay = 'Weekday' | 'Saturday' | 'Sunday';
 export const SERVICE_DAYS: ServiceDay[] = ['Weekday', 'Saturday', 'Sunday'];
+export type CalendarDay = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday';
+/** accepted by engine helpers for old plans/tests saved before concrete weekdays */
+export type StartDay = CalendarDay | 'Weekday';
+export const CALENDAR_DAYS: CalendarDay[] = [
+  'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+];
 
 export const BAND_NAMES = ['overnight', 'am_rush', 'midday', 'pm_rush', 'evening'] as const;
 export type BandIndex = 0 | 1 | 2 | 3 | 4;
@@ -145,7 +151,8 @@ export interface Plan {
   startStationId: string;
   /** seconds after midnight of the service day (may exceed 86400) */
   startClockSec: number;
-  serviceDay: ServiceDay;
+  /** calendar day on which the plan starts; timetable selection advances at midnight */
+  serviceDay: CalendarDay;
   legs: Leg[];
   contingencies: Record<string, ContingencyBranch[]>; // legId -> branches
   config: PlanConfig;

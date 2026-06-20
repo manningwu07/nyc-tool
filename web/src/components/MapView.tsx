@@ -181,6 +181,9 @@ export default function MapView({ idx, plan, result, onSelect }: Props) {
   const animEnd = keyframes[keyframes.length - 1]?.t ?? 0;
   const animSpan = Math.max(1, animEnd - animStart);
   const hasAnim = keyframes.length > 1;
+  const trackKey = keyframes
+    .map(({ t, lng, lat, leg }) => `${t}:${lng}:${lat}:${leg}`)
+    .join('|');
 
   const [playing, setPlaying] = useState(false);
   const [animT, setAnimT] = useState(animStart);
@@ -220,13 +223,16 @@ export default function MapView({ idx, plan, result, onSelect }: Props) {
     return () => cancelAnimationFrame(raf);
   }, [playing, speed, animSpan, animEnd, draw]);
 
-  // editing the plan rebuilds the track: rewind to the start
+  // Rewind only when the actual track changes. Unrelated store updates (such
+  // as attempt autosaves) recreate plan/result objects with identical data.
   useEffect(() => {
     setPlaying(false);
     tRef.current = animStart;
     setAnimT(animStart);
     draw(animStart);
-  }, [keyframes, animStart, draw]);
+    // draw changes identity when equivalent keyframe arrays are recreated.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackKey, animStart]);
 
   const togglePlay = () => {
     if (!playing && tRef.current >= animEnd - 0.01) {

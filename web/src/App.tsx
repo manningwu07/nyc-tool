@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Network } from './engine/types';
+import type { CalendarDay, Network } from './engine/types';
+import { CALENDAR_DAYS } from './engine/types';
 import { buildIndex, evaluatePlan } from './engine/engine';
 import { fmtClock, fmtDur, parseClock } from './engine/time';
 import { activePlan, updateActivePlan, useAppState, setState, newPlan, duplicateActivePlan, deletePlan, importPlan, recordAttempt, startRun } from './store';
@@ -89,11 +90,9 @@ export default function App() {
         />
         <select
           value={plan.serviceDay}
-          onChange={(e) => updateActivePlan((p) => ({ ...p, serviceDay: e.target.value as never }))}
+          onChange={(e) => updateActivePlan((p) => ({ ...p, serviceDay: e.target.value as CalendarDay }))}
         >
-          <option>Weekday</option>
-          <option>Saturday</option>
-          <option>Sunday</option>
+          {CALENDAR_DAYS.map((day) => <option key={day}>{day}</option>)}
         </select>
         <input
           style={{ width: 64 }}

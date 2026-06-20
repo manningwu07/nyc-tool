@@ -1,4 +1,4 @@
-import type { BandIndex, ServiceDay } from './types';
+import type { BandIndex, CalendarDay, ServiceDay, StartDay } from './types';
 import { SERVICE_DAYS } from './types';
 
 export const DAY = 86400;
@@ -14,25 +14,22 @@ export function bandOf(sec: number): BandIndex {
 }
 
 /**
- * Service day in effect at clock `t` for a plan that started on `startDay`.
- * GTFS overnight service (24:xx) belongs to the previous service day, so the
- * boundary is 6am: a Saturday run that drifts past 6am Sunday is on Sunday
- * service.
+ * Calendar day in effect at clock `t` for a plan that started on `startDay`.
+ * `t` is an unbounded clock, so each midnight advances to the next real day.
  */
-export function serviceDayAt(startDay: ServiceDay, t: number): ServiceDay {
-  const offset = Math.max(0, Math.floor((t - 6 * 3600) / DAY));
-  if (offset === 0) return startDay;
-  // Weekday->Weekday is the common case (Mon-Thu nights); Fri->Sat and
-  // Sun->Mon are not representable without a concrete weekday — planner
-  // picks the start day to match the attempt date.
-  const order: Record<ServiceDay, ServiceDay> = {
-    Weekday: 'Weekday',
-    Saturday: 'Sunday',
-    Sunday: 'Weekday',
-  };
-  let d = startDay;
-  for (let i = 0; i < offset; i++) d = order[d];
-  return d;
+export function calendarDayAt(startDay: StartDay, t: number): CalendarDay {
+  const days: CalendarDay[] = [
+    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+  ];
+  const normalized = startDay === 'Weekday' ? 'Monday' : startDay;
+  const offset = Math.floor(t / DAY);
+  return days[(days.indexOf(normalized) + offset % 7 + 7) % 7];
+}
+
+/** GTFS schedule bucket for the calendar day in effect at `t`. */
+export function serviceDayAt(startDay: StartDay, t: number): ServiceDay {
+  const day = calendarDayAt(startDay, t);
+  return day === 'Saturday' || day === 'Sunday' ? day : 'Weekday';
 }
 
 export function fmtClock(sec: number): string {

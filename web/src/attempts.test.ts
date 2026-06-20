@@ -6,7 +6,7 @@ import type { Plan } from './engine/types';
 function mkAttempt(over: Partial<Attempt>): Attempt {
   const plan = {
     id: 'p', name: over.id ?? 'plan', startStationId: '', startClockSec: 0,
-    serviceDay: 'Weekday', legs: [], contingencies: {},
+    serviceDay: 'Monday', legs: [], contingencies: {},
     config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
   } as Plan;
   return {

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildIndex, evaluatePlan, nextDeparture, optionsFrom, SAME_STATION_TRANSFER_SEC } from './engine';
-import { bandOf, serviceDayAt, fmtDur } from './time';
+import { bandOf, calendarDayAt, serviceDayAt, fmtDur } from './time';
 import type { Network, Plan, ServiceBand } from './types';
 
 const FULL: ServiceBand[] = Array.from({ length: 5 }, () => ({
@@ -84,7 +84,7 @@ const idx = buildIndex(fixture);
 function plan(partial: Partial<Plan>): Plan {
   return {
     id: 'p', name: 'test', startStationId: 'A', startClockSec: 12 * 3600,
-    serviceDay: 'Weekday', legs: [], contingencies: {},
+    serviceDay: 'Monday', legs: [], contingencies: {},
     config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
     ...partial,
   };
@@ -97,10 +97,15 @@ describe('time helpers', () => {
     expect(bandOf(25 * 3600)).toBe(0); // GTFS 25:00 = 1am overnight
     expect(bandOf(23 * 3600)).toBe(4);
   });
-  it('service day rollover at 6am', () => {
-    expect(serviceDayAt('Saturday', 23 * 3600)).toBe('Saturday');
-    expect(serviceDayAt('Saturday', 28 * 3600)).toBe('Saturday'); // 4am still Sat service
-    expect(serviceDayAt('Saturday', 31 * 3600)).toBe('Sunday'); // 7am next day
+  it('advances calendar days and schedule buckets at midnight', () => {
+    expect(calendarDayAt('Friday', 24 * 3600)).toBe('Saturday');
+    expect(calendarDayAt('Saturday', 24 * 3600)).toBe('Sunday');
+    expect(calendarDayAt('Sunday', 24 * 3600)).toBe('Monday');
+    expect(calendarDayAt('Monday', 24 * 3600)).toBe('Tuesday');
+    expect(serviceDayAt('Friday', 23 * 3600)).toBe('Weekday');
+    expect(serviceDayAt('Friday', 24 * 3600)).toBe('Saturday');
+    expect(serviceDayAt('Saturday', 24 * 3600)).toBe('Sunday');
+    expect(serviceDayAt('Sunday', 24 * 3600)).toBe('Weekday');
   });
   it('formats durations', () => {
     expect(fmtDur(3661)).toBe('1:01:01');
@@ -284,15 +289,15 @@ describe('timetable departures (the default)', () => {
     expect(res.legs[0].waitSec).toBe(40 * 60);
   });
 
-  it('hard-errors when the last train is missed', () => {
-    // arrive 25:30, after the final 25:10 departure; next service day's noon
-    // train is past the 6am boundary, so the runner is stranded
+  it('continues on the next calendar day after the previous schedule ends', () => {
+    // arrive Tuesday 01:30 after Monday's final 25:10 departure; use the next
+    // departure in Tuesday's timetable rather than looping Monday forever
     const res = evaluatePlan(idx, sched({
       startClockSec: 25.5 * 3600,
       legs: [{ id: '1', type: 'ride', patternId: 'R-S-000', boardStationId: 'A', alightStationId: 'B' }],
     }));
-    expect(res.legs[0].errors[0]).toMatch(/stranded — last train missed/);
-    expect(res.errorCount).toBeGreaterThan(0);
+    expect(res.legs[0].scheduledDepSec).toBe(36 * 3600);
+    expect(res.errorCount).toBe(0);
   });
 
   it('explicit numeric leg wait beats the schedule', () => {
@@ -315,11 +320,27 @@ describe('timetable departures (the default)', () => {
     expect(res.legs[0].waitSec).toBe(0);
   });
 
-  it('nextDeparture checks the previous service day before 6am', () => {
+  it('nextDeparture checks the previous service day after midnight', () => {
     // 1am Sunday: Saturday's 25:10 trip (= 1:10am Sun) should be found
     const p = idx.patternById.get('R-S-000')!;
     const sat = { ...p, departures: { Saturday: p.departures!.Weekday } };
     expect(nextDeparture(sat, 0, 'Sunday', 1 * 3600)).toBe((25 * 60 + 10) * 60 - 86400);
+  });
+
+  it('nextDeparture follows Friday through Tuesday schedule transitions', () => {
+    const p = idx.patternById.get('R-S-000')!;
+    const changing = {
+      ...p,
+      departures: {
+        Weekday: [[30]],
+        Saturday: [[10]],
+        Sunday: [[20]],
+      },
+    };
+    expect(nextDeparture(changing, 0, 'Friday', 24 * 3600 + 5 * 60)).toBe(24 * 3600 + 10 * 60);
+    expect(nextDeparture(changing, 0, 'Friday', 48 * 3600 + 5 * 60)).toBe(48 * 3600 + 20 * 60);
+    expect(nextDeparture(changing, 0, 'Friday', 72 * 3600 + 5 * 60)).toBe(72 * 3600 + 30 * 60);
+    expect(nextDeparture(changing, 0, 'Friday', 96 * 3600 + 5 * 60)).toBe(96 * 3600 + 30 * 60);
   });
 });
 
@@ -339,7 +360,7 @@ describe('real network', () => {
     const sir = real.patterns.find((p) => p.routeId === 'SI' && p.stations.length === 21)!;
     const base: Plan = {
       id: 'p', name: '', startStationId: sir.stations[0], startClockSec: 12 * 3600,
-      serviceDay: 'Weekday', contingencies: {},
+      serviceDay: 'Monday', contingencies: {},
       config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
       legs: [{ id: '1', type: 'ride', patternId: sir.id, boardStationId: sir.stations[0], alightStationId: sir.stations[20] }],
     };
@@ -357,7 +378,7 @@ describe('real network', () => {
     expect(p).toBeDefined();
     const res = evaluatePlan(ridx, {
       id: 'p', name: '', startStationId: p!.stations[0], startClockSec: 12 * 3600,
-      serviceDay: 'Weekday', contingencies: {},
+      serviceDay: 'Monday', contingencies: {},
       config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
       legs: [{ id: '1', type: 'ride', patternId: p!.id, boardStationId: p!.stations[0], alightStationId: p!.stations[1], wait: 'zero' }],
     });
@@ -377,7 +398,7 @@ describe('real network', () => {
     expect(p).toBeDefined();
     const res = evaluatePlan(ridx, {
       id: 'p', name: '', startStationId: s125.id, startClockSec: 13 * 3600,
-      serviceDay: 'Weekday', contingencies: {},
+      serviceDay: 'Monday', contingencies: {},
       config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
       legs: [{ id: '1', type: 'ride', patternId: p!.id, boardStationId: s125.id, alightStationId: s59.id, wait: 'zero' }],
     });
@@ -413,7 +434,7 @@ describe('real network', () => {
     });
     const res = evaluatePlan(ridx, {
       id: 'p', name: '', startStationId: s125.id, startClockSec: 2.5 * 3600,
-      serviceDay: 'Weekday', contingencies: {},
+      serviceDay: 'Monday', contingencies: {},
       config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
       legs: [{ id: '1', type: 'ride', patternId: p.id, boardStationId: s125.id, alightStationId: s59.id }],
     });
@@ -437,7 +458,7 @@ describe('real network', () => {
     const t = 24.55 * 3600; // ~00:33 the next morning, continuous frame
     const res = evaluatePlan(ridx, {
       id: 'p', name: '', startStationId: vc.id, startClockSec: t,
-      serviceDay: 'Weekday', contingencies: {},
+      serviceDay: 'Monday', contingencies: {},
       config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
       legs: [{ id: '1', type: 'ride', patternId: p.id, boardStationId: vc.id, alightStationId: sf.id }],
     });
@@ -457,7 +478,7 @@ describe('real network', () => {
     }));
     const plan0: Plan = {
       id: 'perf', name: '', startStationId: p.stations[0], startClockSec: 12 * 3600,
-      serviceDay: 'Weekday', legs, contingencies: {},
+      serviceDay: 'Monday', legs, contingencies: {},
       config: { passThroughCounts: false, walkPaceMultiplier: 0.8 },
     };
     evaluatePlan(ridx, plan0); // warm

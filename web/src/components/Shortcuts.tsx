@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { NetworkIndex } from '../engine/engine';
 import type { BandIndex, Plan, TransferEdge } from '../engine/types';
 import { BAND_NAMES } from '../engine/types';
-import { fmtDur } from '../engine/time';
+import { fmtDur, serviceDayAt } from '../engine/time';
 import { findShortcuts, type ShortcutCandidate } from '../engine/shortcuts';
 import { addCustomTransfer, removeCustomTransfer, updateCustomTransfer, useAppState } from '../store';
 import { stationName } from './LegRow';
@@ -24,7 +24,7 @@ export default function Shortcuts({ idx, plan }: Props) {
 
   function compute() {
     setResults(findShortcuts(idx, {
-      day: plan.serviceDay, band,
+      day: serviceDayAt(plan.serviceDay, plan.startClockSec), band,
       maxMeters: maxKm * 1000,
       minNetworkSec: minMin * 60,
       branchTipsOnly: tipsOnly,
@@ -55,7 +55,7 @@ export default function Shortcuts({ idx, plan }: Props) {
         notes: '', confirmed: false, routeLabel: route,
         accessSec: Math.round(access * 60),
         busService: {
-          [plan.serviceDay]: {
+          [serviceDayAt(plan.serviceDay, plan.startClockSec)]: {
             rideSec: Array(5).fill(Math.round(ride * 60)),
             headwaySec: Array(5).fill(Math.round(headway * 60)),
           },
